@@ -18,8 +18,8 @@
  * Run all four in Supabase → SQL Editor before pointing the backend at
  * production. For local-dev SQLite fallback, Exposed auto-creates the tables
  * in the order declared in DatabaseFactory.allTables. In Postgres, boot-time
- * validation (DatabaseFactory.validateSchema) logs any of the 38 tables that
- * are missing and refuses to start when AUTO_CREATE_TABLES is not enabled.
+ * validation (DatabaseFactory.validateSchema) logs any of the registered tables
+ * that are missing and refuses to start when AUTO_CREATE_TABLES is not enabled.
  *
  * IMPORTANT DESIGN CHOICES
  * ------------------------
@@ -132,6 +132,59 @@ object OtpDeliveryAttemptsTable : UUIDTable("otp_delivery_attempts", "id") {
     val reason            = text("reason").nullable()
     val rawResponse       = text("raw_response").nullable()
     val createdAt         = timestamp("created_at")
+}
+
+// =====================================================================
+// otp_gateway_devices
+//   Registered OTPSender Android gateway devices (com.littlebridge.otpsender).
+//   The backend pushes an FCM SMS_REQUEST notification to the latest active
+//   device; the gateway app fetches the request and sends the SMS through
+//   its device SIM, then reports status back. A device is considered
+//   "available" when is_active=true AND last_seen_at is within 5 minutes.
+// =====================================================================
+object OtpGatewayDevicesTable : UUIDTable("otp_gateway_devices", "id") {
+    val deviceId       = varchar("device_id", 128)            // Android-wide unique id reported by the app
+    val deviceName     = varchar("device_name", 128).nullable()
+    val fcmToken       = text("fcm_token")                    // FCM registration token for push
+    val appVersion     = varchar("app_version", 32).nullable()
+    val lastSeenAt     = timestamp("last_seen_at")
+    val isActive       = bool("is_active").default(true)
+    val batteryLevel   = integer("battery_level").nullable()  // 0..100
+    val networkType    = varchar("network_type", 16).nullable() // wifi | cellular | none
+    val createdAt      = timestamp("created_at")
+    val updatedAt      = timestamp("updated_at")
+
+    init {
+        uniqueIndex("ux_otp_gw_devices_device_id", deviceId)
+        index("ix_otp_gw_devices_active_seen", false, isActive, lastSeenAt)
+    }
+}
+
+// =====================================================================
+// otp_sms_requests
+//   One row per outbound SMS the backend hands off to an OTPSender gateway
+//   device. Created in PENDING when /otp/send runs; the gateway app
+//   transitions it through PROCESSING -> SENT / FAILED as it dispatches the
+//   SMS from its own SIM and reports status back via the gateway APIs.
+//   `provider` records which path delivered it ("gateway" vs the legacy
+//   provider name) so the operator can see the dual-delivery overlap.
+// =====================================================================
+object OtpSmsRequestsTable : UUIDTable("otp_sms_requests", "id") {
+    val phoneNumber    = varchar("phone_number", 32)
+    val message        = text("message")
+    // status: PENDING | PROCESSING | SENT | FAILED
+    val status         = varchar("status", 16).default("PENDING")
+    val provider       = varchar("provider", 32).nullable()    // "gateway" / "msg91" / "twilio" / ...
+    val assignedDevice = uuid("assigned_device_id").nullable() // FK otp_gateway_devices.id (set when a gateway is picked)
+    val errorMessage   = text("error_message").nullable()
+    val createdAt      = timestamp("created_at")
+    val sentAt         = timestamp("sent_at").nullable()
+    val deliveredAt    = timestamp("delivered_at").nullable()
+
+    init {
+        index("ix_otp_sms_requests_status", false, status)
+        index("ix_otp_sms_requests_created", false, createdAt)
+    }
 }
 
 // =====================================================================

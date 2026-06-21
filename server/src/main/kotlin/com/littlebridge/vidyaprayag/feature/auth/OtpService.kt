@@ -63,6 +63,11 @@ package com.littlebridge.vidyaprayag.feature.auth
 import com.littlebridge.vidyaprayag.db.AuthOtpsTable
 import com.littlebridge.vidyaprayag.db.DatabaseFactory.dbQuery
 import com.littlebridge.vidyaprayag.db.OtpDeliveryAttemptsTable
+import com.littlebridge.vidyaprayag.feature.auth.delivery.OtpMessageTemplates
+import com.littlebridge.vidyaprayag.feature.auth.delivery.sms.OTPSenderGatewayProvider
+import com.littlebridge.vidyaprayag.feature.auth.delivery.sms.SmsSendRequest
+import com.littlebridge.vidyaprayag.feature.auth.delivery.sms.SmsSendResult
+import com.littlebridge.vidyaprayag.feature.auth.gateway.OtpSmsRequestRepository
 import org.jetbrains.exposed.sql.vendors.ForUpdateOption
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.less
@@ -255,6 +260,56 @@ object OtpService {
             locale = locale,
             ttlMinutes = expiryMinutes,
         )
+
+        // ----------------------------------------------------------------
+        // GATEWAY DEVICE DISPATCH (OTP-via-FCM, device-SIM flow)
+        // ----------------------------------------------------------------
+        // Per the binding decision ("both are needed"), we keep the existing
+        // provider SMS delivery above AND additionally push an FCM SMS_REQUEST
+        // to the freshest active OTPSender gateway device. The device sends
+        // the SMS from its own SIM and reports SENT/FAILED back via the
+        // gateway APIs (steps 3 & 4 of the 7-step flow).
+        //
+        // This is BEST-EFFORT: a gateway failure (no device online / FCM push
+        // error) MUST NOT break the existing provider delivery — the user
+        // still gets their OTP via the cloud-provider race above. The row is
+        // created PENDING and left recoverable via GET /api/v1/gateway/pending
+        // if no device is online. Email identifiers are skipped (SMS-only).
+        if (identifierType == "phone") {
+            runCatching {
+                val smsBody = OtpMessageTemplates.smsBody(code, expiryMinutes, locale)
+                val requestId = OtpSmsRequestRepository.createPending(
+                    phoneNumber = identifier,
+                    message = smsBody,
+                )
+                when (val gw = OTPSenderGatewayProvider.send(
+                    SmsSendRequest(
+                        requestId = requestId,
+                        phoneNumber = identifier,
+                        message = smsBody,
+                    )
+                )) {
+                    is SmsSendResult.Dispatched -> log.info(
+                        "[OtpService] gateway dispatched requestId={} fcmMsgId={}",
+                        requestId, gw.providerMessageId,
+                    )
+                    is SmsSendResult.Queued -> log.info(
+                        "[OtpService] gateway queued requestId={} reason={} " +
+                            "(recoverable via /gateway/pending)",
+                        requestId, gw.reason,
+                    )
+                    is SmsSendResult.Failed -> log.warn(
+                        "[OtpService] gateway dispatch failed requestId={} reason={}",
+                        requestId, gw.reason,
+                    )
+                }
+            }.onFailure { t ->
+                log.warn(
+                    "[OtpService] gateway dispatch error (ignored, existing delivery unaffected): {}",
+                    t.javaClass.simpleName,
+                )
+            }
+        }
 
         // Persist the FULL attempt log (every provider tried) for forensics
         // and per-vendor success-rate dashboards.  We do this regardless of
