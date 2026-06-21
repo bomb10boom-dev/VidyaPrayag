@@ -111,6 +111,9 @@ object DatabaseFactory {
         AppUsersTable,
         AuthOtpsTable,
         OtpDeliveryAttemptsTable,
+        // OTP gateway device flow (FCM -> OTPSender app -> SIM SMS)
+        OtpGatewayDevicesTable,
+        OtpSmsRequestsTable,
         UserSessionsTable,
         LandingContentTable,
         AppConfigTable,
@@ -271,7 +274,7 @@ object DatabaseFactory {
     }
 
     /**
-     * Audit finding A: verify every one of the 36 registered tables exists.
+     * Audit finding A: verify every one of the registered tables exists.
      * In Postgres without auto-create, any missing table means an incomplete
      * provisioning recipe was used (see docs/db/PROVISION.sql for the only
      * complete one) and dependent routes would 500 at runtime — so we refuse

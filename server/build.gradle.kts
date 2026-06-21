@@ -130,6 +130,16 @@ dependencies {
     implementation(libs.sqlite)
     implementation(libs.dotenv)
 
+    // -----------------------------------------------------------------
+    // Firebase Admin SDK — used by the OTP gateway device flow to push
+    // SMS_REQUEST notifications to the OTPSender Android app
+    // (com.littlebridge.otpsender) via FCM. The gateway app fetches the
+    // request details and sends the SMS through the device's SIM. Service
+    // account credentials are provided via env vars
+    // (FIREBASE_CREDENTIALS_PATH / GOOGLE_APPLICATION_CREDENTIALS).
+    // -----------------------------------------------------------------
+    implementation(libs.firebase.admin)
+
     testImplementation(libs.ktor.serverTestHost)
     testImplementation(libs.kotlin.testJunit)
 }

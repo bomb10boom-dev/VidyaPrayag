@@ -59,6 +59,7 @@ import com.littlebridge.vidyaprayag.feature.auth.authRouting
 import com.littlebridge.vidyaprayag.feature.calendar.academicCalendarRouting
 import com.littlebridge.vidyaprayag.feature.calendar.academicYearRouting
 import com.littlebridge.vidyaprayag.feature.auth.otpAdminRouting
+import com.littlebridge.vidyaprayag.feature.auth.otpGatewayRouting
 import com.littlebridge.vidyaprayag.feature.config.appStatusRouting
 import com.littlebridge.vidyaprayag.feature.config.versionRouting
 import com.littlebridge.vidyaprayag.feature.content.landingRouting
@@ -246,6 +247,11 @@ fun Application.module() {
         // Safe to leave wired up on Render free tier — no overhead when
         // the token env is empty.
         otpAdminRouting()
+
+        // OTPSender gateway device APIs (OTP-via-FCM device-SIM flow).
+        // Entire surface is unmounted (404) unless OTP_GATEWAY_TOKEN env is
+        // set. Safe to leave wired up — no overhead when the token is empty.
+        otpGatewayRouting()
 
         // Authenticated
         userDetailsRouting()
