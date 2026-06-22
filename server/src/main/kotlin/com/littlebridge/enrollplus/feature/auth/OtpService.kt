@@ -63,6 +63,8 @@ package com.littlebridge.enrollplus.feature.auth
 import com.littlebridge.enrollplus.db.AuthOtpsTable
 import com.littlebridge.enrollplus.db.DatabaseFactory.dbQuery
 import com.littlebridge.enrollplus.db.OtpDeliveryAttemptsTable
+import com.littlebridge.enrollplus.feature.auth.delivery.OtpMessageTemplates
+import com.littlebridge.enrollplus.feature.gateway.service.GatewaySmsService
 import org.jetbrains.exposed.sql.vendors.ForUpdateOption
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.less
@@ -87,7 +89,14 @@ sealed class OtpSendResult {
         val identifier: String,
         val expiresAt: Instant,
         val resendCount: Int,
-        val devCode: String?           // only populated in dev
+        val devCode: String?,          // only populated in dev
+        /**
+         * OTPSender gateway SMS request id (feature/setup_notification). Non-null
+         * only when the OTP was routed through the gateway (OTP_GATEWAY_ENABLED=true,
+         * phone identifier). Null on the direct-provider path. Surfaced to the auth
+         * client so it can correlate the eventual SMS-gateway delivery.
+         */
+        val requestId: String? = null,
     ) : OtpSendResult()
     object RateLimited : OtpSendResult()
     data class DeliveryFailed(val reason: String) : OtpSendResult()
@@ -139,6 +148,12 @@ object OtpService {
     }
 
     private val rng = SecureRandom()
+
+    /**
+     * OTPSender gateway dispatcher (feature/setup_notification). Lazily held so
+     * the direct-provider path is unaffected when the gateway is disabled.
+     */
+    private val gatewaySmsService by lazy { GatewaySmsService() }
 
     // --------------------------------------------------------------
     // SEND
@@ -243,6 +258,61 @@ object OtpService {
             false
         }
         if (rateLimited) return OtpSendResult.RateLimited
+
+        // ----------------------------------------------------------------
+        // OTPSender gateway path (feature/setup_notification)
+        // ----------------------------------------------------------------
+        // When the gateway is enabled (OTP_GATEWAY_ENABLED=true) AND this is a
+        // PHONE identifier, we DO NOT call any SMS provider. Instead:
+        //   Store OTP (done above) → create an SMS request → locate an active
+        //   OTPSender device → push an FCM data-message → return the requestId.
+        // The OTPSender phone sends the SMS from its own SIM. If no device is
+        // live the request is left pending (the OTPSender recovery flow picks it
+        // up) — we NEVER fail OTP generation on that account.
+        //
+        // Email identifiers keep using the direct delivery chain below (SMTP),
+        // since the gateway only sends SMS.
+        if (identifierType != "email" && GatewaySmsService.isEnabled()) {
+            val smsBody = OtpMessageTemplates.smsBody(code, expiryMinutes, locale)
+            val gw = runCatching {
+                gatewaySmsService.sendOtpSms(
+                    phoneNumber = identifier,
+                    otp = code,
+                    message = smsBody,
+                    purpose = purpose,
+                )
+            }.getOrElse {
+                log.warn("[OtpService] gateway dispatch threw: {}", it.message)
+                null
+            }
+
+            // Reflect the gateway as the delivery channel/provider on the
+            // auth_otps row so /verify-otp + admin tooling can see "otp_gateway".
+            val now = Instant.now()
+            dbQuery {
+                AuthOtpsTable.update({
+                    (AuthOtpsTable.identifier eq identifier) and (AuthOtpsTable.purpose eq purpose)
+                }) {
+                    it[deliveryChannel] = "sms"
+                    it[deliveryProvider] = "otp_gateway"
+                    it[providerMessageId] = gw?.requestId
+                    it[updatedAt] = now
+                }
+            }
+
+            val resendsNow = dbQuery {
+                AuthOtpsTable.selectAll()
+                    .where { (AuthOtpsTable.identifier eq identifier) and (AuthOtpsTable.purpose eq purpose) }
+                    .single()[AuthOtpsTable.resendCount].toInt()
+            }
+            return OtpSendResult.Sent(
+                identifier = identifier,
+                expiresAt = expires,
+                resendCount = resendsNow,
+                devCode = if (devReturnCode) code else null,
+                requestId = gw?.requestId,
+            )
+        }
 
         // Deliver via the multi-provider chain (WhatsApp Cloud → Fast2SMS →
         // MSG91 → Twilio → SMTP → Console).  The dispatcher picks the

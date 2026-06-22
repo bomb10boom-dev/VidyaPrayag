@@ -906,6 +906,90 @@ object DeviceTokensTable : UUIDTable("device_tokens", "id") {
 }
 
 // =====================================================================
+// otp_gateway_devices  (feature/setup_notification — OTPSender gateway registry)
+// =====================================================================
+//
+// The OTPSender Android app is an SMS GATEWAY: instead of paying an SMS vendor,
+// the backend creates an SMS request, sends an FCM data-message to a registered
+// OTPSender phone, and that phone sends the SMS from its own SIM. This table is
+// the registry of those gateway devices.
+//
+//   POST /api/v1/gateway/register   -> upsert a row (deviceId is the natural key)
+//   POST /api/v1/gateway/heartbeat   -> refresh last_seen_at + battery/network
+//
+// Device selection (OtpService): is_active = true AND last_seen_at within the
+// liveness window (5 min); prefer the most recently active device. Columns
+// mirror database/migrations/setup_otp_gateway.sql EXACTLY.
+object OtpGatewayDevicesTable : UUIDTable("otp_gateway_devices", "id") {
+    val deviceId    = varchar("device_id", 128)                 // natural key — OTPSender install id
+    val deviceName  = varchar("device_name", 128).nullable()    // human label (e.g. "Office Pixel")
+    val fcmToken    = text("fcm_token")                          // OTPSender FCM token (separate project)
+    val appVersion  = varchar("app_version", 64).nullable()     // OTPSender BuildConfig.VERSION_NAME
+    val isActive    = bool("is_active").default(true)           // soft-deactivated when retired
+    val batteryLevel = integer("battery_level").nullable()      // 0..100, from heartbeat
+    val networkType = varchar("network_type", 32).nullable()    // wifi | cellular | …, from heartbeat
+    val lastSeenAt  = timestamp("last_seen_at").nullable()      // bumped by register + heartbeat
+    val createdAt   = timestamp("created_at")
+    val updatedAt   = timestamp("updated_at")
+
+    init {
+        // A device_id is globally unique (one OTPSender install). Re-registering
+        // the same device_id refreshes its row via UPDATE — never a duplicate.
+        uniqueIndex("ux_otp_gateway_devices_device_id", deviceId)
+        // Fast selection of the freshest active gateway for dispatch.
+        index(
+            customIndexName = "ix_otp_gateway_devices_active_seen",
+            isUnique = false,
+            isActive,
+            lastSeenAt
+        )
+    }
+}
+
+// =====================================================================
+// sms_requests  (feature/setup_notification — OTPSender SMS request queue)
+// =====================================================================
+//
+// One row per OTP-SMS the backend asks an OTPSender gateway to deliver. The
+// OTP itself is generated/stored in auth_otps; this table is the DELIVERY
+// request the gateway polls / receives via FCM and reports back on.
+//
+//   (OtpService) create row (status=pending) -> FCM data-message to gateway
+//   GET  /api/v1/gateway/requests/{requestId}            -> gateway fetches detail
+//   GET  /api/v1/gateway/pending                          -> recovery: list pending
+//   POST /api/v1/gateway/requests/{requestId}/status      -> gateway reports SENT|FAILED
+//
+// `request_id` is the public, client-facing id (a UUID string returned to the
+// auth caller and echoed in the FCM payload); `id` is the internal PK.
+// Columns mirror database/migrations/setup_otp_gateway.sql EXACTLY.
+object SmsRequestsTable : UUIDTable("sms_requests", "id") {
+    val requestId    = varchar("request_id", 64)                 // public id (UUID string)
+    val phoneNumber  = varchar("phone_number", 32)               // E.164 destination
+    val otp          = varchar("otp", 12).nullable()             // plaintext code the gateway must send
+    val message      = text("message")                           // full SMS body
+    val status       = varchar("status", 16).default("pending")  // pending | dispatched | sent | failed
+    val deviceId     = varchar("device_id", 128).nullable()      // assigned OTPSender device_id (null while pending)
+    val errorMessage = text("error_message").nullable()          // populated when status=failed
+    val purpose      = varchar("purpose", 24).default("login")   // login | signup | …
+    val createdAt    = timestamp("created_at")
+    val updatedAt    = timestamp("updated_at")
+    val dispatchedAt = timestamp("dispatched_at").nullable()     // when FCM was sent to the gateway
+    val sentAt       = timestamp("sent_at").nullable()           // when the gateway reported SENT
+
+    init {
+        // request_id is the public lookup key for the gateway status callbacks.
+        uniqueIndex("ux_sms_requests_request_id", requestId)
+        // Recovery query: pending requests, oldest first.
+        index(
+            customIndexName = "ix_sms_requests_status_created",
+            isUnique = false,
+            status,
+            createdAt
+        )
+    }
+}
+
+// =====================================================================
 // parent_child_links  (RA-48 — parent→child link approval workflow)
 // =====================================================================
 /**

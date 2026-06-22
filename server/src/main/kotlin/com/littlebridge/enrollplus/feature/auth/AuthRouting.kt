@@ -88,7 +88,10 @@ data class SendOtpResponse(
     @SerialName("expires_at") val expiresAt: String,
     @SerialName("resend_count") val resendCount: Int,
     @SerialName("dev_code") val devCode: String? = null,
-    val message: String
+    val message: String,
+    // OTPSender gateway SMS request id (feature/setup_notification). Non-null only
+    // when the OTP was routed through the gateway; null on the direct-SMS path.
+    @SerialName("request_id") val requestId: String? = null,
 )
 
 @Serializable
@@ -291,7 +294,8 @@ fun Route.authRouting() {
                         expiresAt = result.expiresAt.toString(),
                         resendCount = result.resendCount,
                         devCode = result.devCode,
-                        message = "OTP sent. Valid for 10 minutes."
+                        message = "OTP sent. Valid for 10 minutes.",
+                        requestId = result.requestId,
                     ),
                     message = "OTP sent"
                 )

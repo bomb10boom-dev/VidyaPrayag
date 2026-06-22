@@ -63,6 +63,7 @@ import com.littlebridge.enrollplus.feature.config.appStatusRouting
 import com.littlebridge.enrollplus.feature.config.versionRouting
 import com.littlebridge.enrollplus.feature.content.landingRouting
 import com.littlebridge.enrollplus.feature.content.supportRouting
+import com.littlebridge.enrollplus.feature.gateway.api.gatewayRouting
 import com.littlebridge.enrollplus.feature.media.mediaRouting
 import com.littlebridge.enrollplus.feature.notification.api.notificationRouting
 import com.littlebridge.enrollplus.feature.notifications.notificationsRouting
@@ -247,6 +248,17 @@ fun Application.module() {
         // Safe to leave wired up on Render free tier — no overhead when
         // the token env is empty.
         otpAdminRouting()
+
+        // OTPSender SMS-gateway integration (feature/setup_notification).
+        // Machine-to-machine peer authenticated via the X-Gateway-Token header.
+        // Entire route group is unmounted (404) unless OTP_GATEWAY_TOKEN is set
+        // — same ops-only convention as otpAdminRouting above.
+        //   POST /api/v1/gateway/register
+        //   POST /api/v1/gateway/heartbeat
+        //   GET  /api/v1/gateway/requests/{requestId}
+        //   POST /api/v1/gateway/requests/{requestId}/status
+        //   GET  /api/v1/gateway/pending
+        gatewayRouting()
 
         // Authenticated
         userDetailsRouting()

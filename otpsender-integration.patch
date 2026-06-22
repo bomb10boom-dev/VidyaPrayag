@@ -1,0 +1,2015 @@
+diff --git a/.env.example b/.env.example
+index 22de7e1..572b2db 100644
+--- a/.env.example
++++ b/.env.example
+@@ -271,3 +271,49 @@ DEBUG_ERRORS=false
+ #   LOGIN_WINDOW_SECONDS  window length in seconds        (default 900 = 15m, range 30-86400)
+ LOGIN_MAX_ATTEMPTS=8
+ LOGIN_WINDOW_SECONDS=900
++
++# -------------------------------------------------------------------
++# FIREBASE — PRIMARY APP (Enroll / VidyaPrayag push notifications)
++# -------------------------------------------------------------------
++# The server-side Firebase Admin SDK pushes user-facing notifications via this
++# project. Resolution order (first non-blank wins), see FirebaseAdminInitializer:
++#   1. FIREBASE_CREDENTIALS_JSON      full service-account JSON (inline)
++#   2. FIREBASE_CREDENTIALS_FILE      absolute path to the service-account JSON
++#   3. GOOGLE_APPLICATION_CREDENTIALS Google ADC convention (path)
++#   4. local.properties (firebase.credentials.file)  — laptop DX only
++# When NONE resolve, push dispatch degrades to a no-op (never crashes boot).
++# FIREBASE_CREDENTIALS_JSON=
++# FIREBASE_CREDENTIALS_FILE=/etc/secrets/enrollplus-firebase-adminsdk.json
++# Example (local.properties): firebase.credentials.file=/Users/you/Secrets/enrollplus-firebase-adminsdk.json
++
++# -------------------------------------------------------------------
++# OTPSENDER SMS GATEWAY (feature/setup_notification)
++# -------------------------------------------------------------------
++# The OTPSender Android app is an SMS gateway: the backend pushes an FCM
++# data-message to a registered OTPSender phone, and that phone sends the OTP
++# SMS from its own SIM. No SMS vendor is billed on this path.
++#
++# 1) FIREBASE — OTPSENDER APP (a SEPARATE Firebase project from the primary app)
++#    Each app needs its OWN service-account credential. Mirror the FIREBASE_*
++#    family with an OTP_SENDER_ prefix. NO ADC fallback here (ADC is process-
++#    global and would resolve to the PRIMARY project, sending to the wrong app).
++# OTP_SENDER_FIREBASE_CREDENTIALS_JSON=
++# OTP_SENDER_FIREBASE_CREDENTIALS_FILE=/etc/secrets/otpsender-firebase-adminsdk.json
++# Example (local.properties): otp.sender.firebase.credentials.file=/Users/you/Secrets/otpsender-firebase-adminsdk.json
++#
++# 2) GATEWAY ROUTING — shared secret for the OTPSender device <-> backend API.
++#    When OTP_GATEWAY_TOKEN is UNSET the entire /api/v1/gateway/* surface is
++#    404'd (its existence is not advertised). When set, every gateway request
++#    must present a matching X-Gateway-Token header.
++# OTP_GATEWAY_TOKEN=change-me-to-a-long-random-secret
++#
++# 3) OTP DELIVERY SWITCH — route phone OTPs through the gateway instead of the
++#    direct SMS-provider chain. When false (default) OTPs use the existing
++#    Fast2SMS/MSG91/Twilio/SMTP/Console chain unchanged. Email OTPs always use
++#    the direct chain (the gateway only sends SMS).
++# OTP_GATEWAY_ENABLED=false
++#
++# 4) DEVICE LIVENESS WINDOW (minutes) — a gateway device is eligible for
++#    dispatch only when is_active=true AND last_seen_at is within this window.
++#    Default 5 (per spec). Range 1-60.
++# OTP_GATEWAY_LIVENESS_MINUTES=5
+diff --git a/database/migrations/setup_otp_gateway.sql b/database/migrations/setup_otp_gateway.sql
+new file mode 100644
+index 0000000..3850c90
+--- /dev/null
++++ b/database/migrations/setup_otp_gateway.sql
+@@ -0,0 +1,174 @@
++-- =============================================================================
++-- Migration: setup_otp_gateway
++-- Branch:    feature/setup_notification
++-- Subject:   OTPSender SMS-gateway integration
++--              • otp_gateway_devices — registry of OTPSender Android gateways
++--              • sms_requests        — the SMS-delivery request queue
++--
++-- WHY THIS EXISTS
++--   The OTPSender Android app is an SMS GATEWAY. Instead of paying an SMS
++--   vendor, the backend:
++--     1. generates + stores the OTP (auth_otps — unchanged),
++--     2. creates an sms_requests row (status = pending),
++--     3. locates an active OTPSender device (otp_gateway_devices),
++--     4. pushes an FCM data-message to that device (separate Firebase project),
++--     5. returns the request_id.
++--   The OTPSender phone sends the SMS from its own SIM and reports back via
++--   POST /api/v1/gateway/requests/{requestId}/status.
++--
++-- HOW TO RUN
++--   Supabase / Render Postgres -> SQL Editor -> paste this whole file -> Run.
++--   100% SAFE TO RE-RUN: every statement is guarded with IF NOT EXISTS, so
++--   running it against a database that already has the tables / columns /
++--   indexes is a harmless no-op and NEVER raises an error.
++--
++-- COLUMN FIDELITY
++--   The column names / types / nullability / defaults below match
++--   server/src/main/kotlin/com.littlebridge.enrollplus/db/Tables.kt
++--   (OtpGatewayDevicesTable + SmsRequestsTable) EXACTLY so the Exposed ORM
++--   mapping lines up with the real Postgres schema.
++-- =============================================================================
++
++-- ---------------------------------------------------------------------------
++-- otp_gateway_devices
++-- ---------------------------------------------------------------------------
++--   id            uuid PK
++--   device_id     varchar(128) NOT NULL — OTPSender install id (natural key)
++--   device_name   varchar(128) NULL — human label (e.g. "Office Pixel")
++--   fcm_token     text NOT NULL — OTPSender FCM token (separate Firebase project)
++--   app_version   varchar(64) NULL — OTPSender BuildConfig.VERSION_NAME
++--   is_active     boolean default true — soft-deactivated when retired
++--   battery_level integer NULL — 0..100, reported by heartbeat
++--   network_type  varchar(32) NULL — wifi | cellular | …, reported by heartbeat
++--   last_seen_at  timestamp NULL — bumped by register + heartbeat (liveness)
++--   created_at    timestamp — first registration time
++--   updated_at    timestamp — last metadata refresh
++-- ---------------------------------------------------------------------------
++
++CREATE TABLE IF NOT EXISTS public.otp_gateway_devices (
++  id             uuid          NOT NULL,
++  device_id      varchar(128)  NOT NULL,
++  device_name    varchar(128)  NULL,
++  fcm_token      text          NOT NULL,
++  app_version    varchar(64)   NULL,
++  is_active      boolean       NOT NULL DEFAULT true,
++  battery_level  integer       NULL,
++  network_type   varchar(32)   NULL,
++  last_seen_at   timestamp without time zone NULL,
++  created_at     timestamp without time zone NOT NULL DEFAULT now(),
++  updated_at     timestamp without time zone NOT NULL DEFAULT now(),
++  CONSTRAINT otp_gateway_devices_pkey PRIMARY KEY (id)
++) TABLESPACE pg_default;
++
++-- Re-assert every column so the migration also "heals" a partially-created
++-- table. Each is a no-op when the column already exists with the same shape.
++ALTER TABLE public.otp_gateway_devices ADD COLUMN IF NOT EXISTS device_id      varchar(128)  NOT NULL;
++ALTER TABLE public.otp_gateway_devices ADD COLUMN IF NOT EXISTS device_name    varchar(128)  NULL;
++ALTER TABLE public.otp_gateway_devices ADD COLUMN IF NOT EXISTS fcm_token      text          NOT NULL;
++ALTER TABLE public.otp_gateway_devices ADD COLUMN IF NOT EXISTS app_version    varchar(64)   NULL;
++ALTER TABLE public.otp_gateway_devices ADD COLUMN IF NOT EXISTS is_active      boolean       NOT NULL DEFAULT true;
++ALTER TABLE public.otp_gateway_devices ADD COLUMN IF NOT EXISTS battery_level  integer       NULL;
++ALTER TABLE public.otp_gateway_devices ADD COLUMN IF NOT EXISTS network_type   varchar(32)   NULL;
++ALTER TABLE public.otp_gateway_devices ADD COLUMN IF NOT EXISTS last_seen_at   timestamp without time zone NULL;
++ALTER TABLE public.otp_gateway_devices ADD COLUMN IF NOT EXISTS created_at     timestamp without time zone NOT NULL DEFAULT now();
++ALTER TABLE public.otp_gateway_devices ADD COLUMN IF NOT EXISTS updated_at     timestamp without time zone NOT NULL DEFAULT now();
++
++-- Indexes (must match OtpGatewayDevicesTable.init{} in Tables.kt EXACTLY).
++-- A device_id is globally unique (one OTPSender install). Re-registering the
++-- same device_id is resolved by the repository as an UPDATE — never a dup.
++CREATE UNIQUE INDEX IF NOT EXISTS ux_otp_gateway_devices_device_id
++  ON public.otp_gateway_devices (device_id);
++
++-- Fast selection of the freshest active gateway for dispatch
++-- (WHERE is_active = true AND last_seen_at >= now() - interval '5 minutes'
++--  ORDER BY last_seen_at DESC LIMIT 1).
++CREATE INDEX IF NOT EXISTS ix_otp_gateway_devices_active_seen
++  ON public.otp_gateway_devices (is_active, last_seen_at);
++
++-- ---------------------------------------------------------------------------
++-- sms_requests
++-- ---------------------------------------------------------------------------
++--   id            uuid PK
++--   request_id    varchar(64) NOT NULL — public id (UUID string), gateway key
++--   phone_number  varchar(32) NOT NULL — E.164 destination
++--   otp           varchar(12) NULL — plaintext code the gateway sends
++--   message       text NOT NULL — full SMS body
++--   status        varchar(16) default 'pending' — pending|dispatched|sent|failed
++--   device_id     varchar(128) NULL — assigned OTPSender device (null while pending)
++--   error_message text NULL — populated when status = failed
++--   purpose       varchar(24) default 'login' — login | signup | …
++--   created_at    timestamp
++--   updated_at    timestamp
++--   dispatched_at timestamp NULL — when the FCM data-message was pushed
++--   sent_at       timestamp NULL — when the gateway reported SENT
++-- ---------------------------------------------------------------------------
++
++CREATE TABLE IF NOT EXISTS public.sms_requests (
++  id             uuid          NOT NULL,
++  request_id     varchar(64)   NOT NULL,
++  phone_number   varchar(32)   NOT NULL,
++  otp            varchar(12)   NULL,
++  message        text          NOT NULL,
++  status         varchar(16)   NOT NULL DEFAULT 'pending',
++  device_id      varchar(128)  NULL,
++  error_message  text          NULL,
++  purpose        varchar(24)   NOT NULL DEFAULT 'login',
++  created_at     timestamp without time zone NOT NULL DEFAULT now(),
++  updated_at     timestamp without time zone NOT NULL DEFAULT now(),
++  dispatched_at  timestamp without time zone NULL,
++  sent_at        timestamp without time zone NULL,
++  CONSTRAINT sms_requests_pkey PRIMARY KEY (id)
++) TABLESPACE pg_default;
++
++ALTER TABLE public.sms_requests ADD COLUMN IF NOT EXISTS request_id     varchar(64)   NOT NULL;
++ALTER TABLE public.sms_requests ADD COLUMN IF NOT EXISTS phone_number   varchar(32)   NOT NULL;
++ALTER TABLE public.sms_requests ADD COLUMN IF NOT EXISTS otp            varchar(12)   NULL;
++ALTER TABLE public.sms_requests ADD COLUMN IF NOT EXISTS message        text          NOT NULL;
++ALTER TABLE public.sms_requests ADD COLUMN IF NOT EXISTS status         varchar(16)   NOT NULL DEFAULT 'pending';
++ALTER TABLE public.sms_requests ADD COLUMN IF NOT EXISTS device_id      varchar(128)  NULL;
++ALTER TABLE public.sms_requests ADD COLUMN IF NOT EXISTS error_message  text          NULL;
++ALTER TABLE public.sms_requests ADD COLUMN IF NOT EXISTS purpose        varchar(24)   NOT NULL DEFAULT 'login';
++ALTER TABLE public.sms_requests ADD COLUMN IF NOT EXISTS created_at     timestamp without time zone NOT NULL DEFAULT now();
++ALTER TABLE public.sms_requests ADD COLUMN IF NOT EXISTS updated_at     timestamp without time zone NOT NULL DEFAULT now();
++ALTER TABLE public.sms_requests ADD COLUMN IF NOT EXISTS dispatched_at  timestamp without time zone NULL;
++ALTER TABLE public.sms_requests ADD COLUMN IF NOT EXISTS sent_at        timestamp without time zone NULL;
++
++-- Indexes (must match SmsRequestsTable.init{} in Tables.kt EXACTLY).
++-- request_id is the public lookup key for the gateway status callbacks.
++CREATE UNIQUE INDEX IF NOT EXISTS ux_sms_requests_request_id
++  ON public.sms_requests (request_id);
++
++-- Recovery query: pending/dispatched requests, oldest first
++-- (GET /api/v1/gateway/pending).
++CREATE INDEX IF NOT EXISTS ix_sms_requests_status_created
++  ON public.sms_requests (status, created_at);
++
++-- ---------------------------------------------------------------------------
++-- updated_at auto-touch triggers
++-- ---------------------------------------------------------------------------
++-- The repositories set updated_at on every write, but we also install
++-- Postgres-side triggers so any ad-hoc SQL UPDATE (e.g. a manual deactivation
++-- in the editor) keeps the column honest.
++-- ---------------------------------------------------------------------------
++
++CREATE OR REPLACE FUNCTION public.touch_otp_gateway_updated_at()
++RETURNS trigger AS $$
++BEGIN
++  NEW.updated_at = now();
++  RETURN NEW;
++END;
++$$ LANGUAGE plpgsql;
++
++DROP TRIGGER IF EXISTS trg_otp_gateway_devices_touch_updated_at ON public.otp_gateway_devices;
++CREATE TRIGGER trg_otp_gateway_devices_touch_updated_at
++  BEFORE UPDATE ON public.otp_gateway_devices
++  FOR EACH ROW
++  EXECUTE FUNCTION public.touch_otp_gateway_updated_at();
++
++DROP TRIGGER IF EXISTS trg_sms_requests_touch_updated_at ON public.sms_requests;
++CREATE TRIGGER trg_sms_requests_touch_updated_at
++  BEFORE UPDATE ON public.sms_requests
++  FOR EACH ROW
++  EXECUTE FUNCTION public.touch_otp_gateway_updated_at();
++
++-- End of migration.
+diff --git a/scripts/otp-gateway-render-2026-06-22.sql b/scripts/otp-gateway-render-2026-06-22.sql
+new file mode 100644
+index 0000000..81d7f45
+--- /dev/null
++++ b/scripts/otp-gateway-render-2026-06-22.sql
+@@ -0,0 +1,195 @@
++-- =============================================================================
++-- RENDER DEPLOYMENT SCRIPT — OTPSender SMS-gateway integration (2026-06-22)
++--
++-- This is the self-contained, copy-paste runnable version of
++-- database/migrations/setup_otp_gateway.sql for the Render Postgres SQL
++-- console (which cannot \i-include other files).
++--
++-- HOW TO DEPLOY ON RENDER
++--   1. Render Dashboard -> your Postgres instance -> "Connect" -> open a SQL
++--      shell (psql) OR use the Supabase SQL Editor if Supabase-backed.
++--   2. Paste this ENTIRE file and run it.
++--   3. 100% idempotent (every statement is IF NOT EXISTS / OR REPLACE) — safe
++--      to re-run on every deploy. It creates: otp_gateway_devices, sms_requests,
++--      their indexes, and the updated_at touch triggers.
++--   4. After running, set the env vars (see .env.example):
++--        OTP_GATEWAY_ENABLED=true
++--        OTP_GATEWAY_TOKEN=<shared secret for X-Gateway-Token>
++--        OTP_SENDER_FIREBASE_CREDENTIALS_JSON=<OTPSender service-account JSON>
++--      (or OTP_SENDER_FIREBASE_CREDENTIALS_FILE=<path>)
++-- =============================================================================
++
++-- =============================================================================
++-- Migration: setup_otp_gateway
++-- Branch:    feature/setup_notification
++-- Subject:   OTPSender SMS-gateway integration
++--              • otp_gateway_devices — registry of OTPSender Android gateways
++--              • sms_requests        — the SMS-delivery request queue
++--
++-- WHY THIS EXISTS
++--   The OTPSender Android app is an SMS GATEWAY. Instead of paying an SMS
++--   vendor, the backend:
++--     1. generates + stores the OTP (auth_otps — unchanged),
++--     2. creates an sms_requests row (status = pending),
++--     3. locates an active OTPSender device (otp_gateway_devices),
++--     4. pushes an FCM data-message to that device (separate Firebase project),
++--     5. returns the request_id.
++--   The OTPSender phone sends the SMS from its own SIM and reports back via
++--   POST /api/v1/gateway/requests/{requestId}/status.
++--
++-- HOW TO RUN
++--   Supabase / Render Postgres -> SQL Editor -> paste this whole file -> Run.
++--   100% SAFE TO RE-RUN: every statement is guarded with IF NOT EXISTS, so
++--   running it against a database that already has the tables / columns /
++--   indexes is a harmless no-op and NEVER raises an error.
++--
++-- COLUMN FIDELITY
++--   The column names / types / nullability / defaults below match
++--   server/src/main/kotlin/com.littlebridge.enrollplus/db/Tables.kt
++--   (OtpGatewayDevicesTable + SmsRequestsTable) EXACTLY so the Exposed ORM
++--   mapping lines up with the real Postgres schema.
++-- =============================================================================
++
++-- ---------------------------------------------------------------------------
++-- otp_gateway_devices
++-- ---------------------------------------------------------------------------
++--   id            uuid PK
++--   device_id     varchar(128) NOT NULL — OTPSender install id (natural key)
++--   device_name   varchar(128) NULL — human label (e.g. "Office Pixel")
++--   fcm_token     text NOT NULL — OTPSender FCM token (separate Firebase project)
++--   app_version   varchar(64) NULL — OTPSender BuildConfig.VERSION_NAME
++--   is_active     boolean default true — soft-deactivated when retired
++--   battery_level integer NULL — 0..100, reported by heartbeat
++--   network_type  varchar(32) NULL — wifi | cellular | …, reported by heartbeat
++--   last_seen_at  timestamp NULL — bumped by register + heartbeat (liveness)
++--   created_at    timestamp — first registration time
++--   updated_at    timestamp — last metadata refresh
++-- ---------------------------------------------------------------------------
++
++CREATE TABLE IF NOT EXISTS public.otp_gateway_devices (
++  id             uuid          NOT NULL,
++  device_id      varchar(128)  NOT NULL,
++  device_name    varchar(128)  NULL,
++  fcm_token      text          NOT NULL,
++  app_version    varchar(64)   NULL,
++  is_active      boolean       NOT NULL DEFAULT true,
++  battery_level  integer       NULL,
++  network_type   varchar(32)   NULL,
++  last_seen_at   timestamp without time zone NULL,
++  created_at     timestamp without time zone NOT NULL DEFAULT now(),
++  updated_at     timestamp without time zone NOT NULL DEFAULT now(),
++  CONSTRAINT otp_gateway_devices_pkey PRIMARY KEY (id)
++) TABLESPACE pg_default;
++
++-- Re-assert every column so the migration also "heals" a partially-created
++-- table. Each is a no-op when the column already exists with the same shape.
++ALTER TABLE public.otp_gateway_devices ADD COLUMN IF NOT EXISTS device_id      varchar(128)  NOT NULL;
++ALTER TABLE public.otp_gateway_devices ADD COLUMN IF NOT EXISTS device_name    varchar(128)  NULL;
++ALTER TABLE public.otp_gateway_devices ADD COLUMN IF NOT EXISTS fcm_token      text          NOT NULL;
++ALTER TABLE public.otp_gateway_devices ADD COLUMN IF NOT EXISTS app_version    varchar(64)   NULL;
++ALTER TABLE public.otp_gateway_devices ADD COLUMN IF NOT EXISTS is_active      boolean       NOT NULL DEFAULT true;
++ALTER TABLE public.otp_gateway_devices ADD COLUMN IF NOT EXISTS battery_level  integer       NULL;
++ALTER TABLE public.otp_gateway_devices ADD COLUMN IF NOT EXISTS network_type   varchar(32)   NULL;
++ALTER TABLE public.otp_gateway_devices ADD COLUMN IF NOT EXISTS last_seen_at   timestamp without time zone NULL;
++ALTER TABLE public.otp_gateway_devices ADD COLUMN IF NOT EXISTS created_at     timestamp without time zone NOT NULL DEFAULT now();
++ALTER TABLE public.otp_gateway_devices ADD COLUMN IF NOT EXISTS updated_at     timestamp without time zone NOT NULL DEFAULT now();
++
++-- Indexes (must match OtpGatewayDevicesTable.init{} in Tables.kt EXACTLY).
++-- A device_id is globally unique (one OTPSender install). Re-registering the
++-- same device_id is resolved by the repository as an UPDATE — never a dup.
++CREATE UNIQUE INDEX IF NOT EXISTS ux_otp_gateway_devices_device_id
++  ON public.otp_gateway_devices (device_id);
++
++-- Fast selection of the freshest active gateway for dispatch
++-- (WHERE is_active = true AND last_seen_at >= now() - interval '5 minutes'
++--  ORDER BY last_seen_at DESC LIMIT 1).
++CREATE INDEX IF NOT EXISTS ix_otp_gateway_devices_active_seen
++  ON public.otp_gateway_devices (is_active, last_seen_at);
++
++-- ---------------------------------------------------------------------------
++-- sms_requests
++-- ---------------------------------------------------------------------------
++--   id            uuid PK
++--   request_id    varchar(64) NOT NULL — public id (UUID string), gateway key
++--   phone_number  varchar(32) NOT NULL — E.164 destination
++--   otp           varchar(12) NULL — plaintext code the gateway sends
++--   message       text NOT NULL — full SMS body
++--   status        varchar(16) default 'pending' — pending|dispatched|sent|failed
++--   device_id     varchar(128) NULL — assigned OTPSender device (null while pending)
++--   error_message text NULL — populated when status = failed
++--   purpose       varchar(24) default 'login' — login | signup | …
++--   created_at    timestamp
++--   updated_at    timestamp
++--   dispatched_at timestamp NULL — when the FCM data-message was pushed
++--   sent_at       timestamp NULL — when the gateway reported SENT
++-- ---------------------------------------------------------------------------
++
++CREATE TABLE IF NOT EXISTS public.sms_requests (
++  id             uuid          NOT NULL,
++  request_id     varchar(64)   NOT NULL,
++  phone_number   varchar(32)   NOT NULL,
++  otp            varchar(12)   NULL,
++  message        text          NOT NULL,
++  status         varchar(16)   NOT NULL DEFAULT 'pending',
++  device_id      varchar(128)  NULL,
++  error_message  text          NULL,
++  purpose        varchar(24)   NOT NULL DEFAULT 'login',
++  created_at     timestamp without time zone NOT NULL DEFAULT now(),
++  updated_at     timestamp without time zone NOT NULL DEFAULT now(),
++  dispatched_at  timestamp without time zone NULL,
++  sent_at        timestamp without time zone NULL,
++  CONSTRAINT sms_requests_pkey PRIMARY KEY (id)
++) TABLESPACE pg_default;
++
++ALTER TABLE public.sms_requests ADD COLUMN IF NOT EXISTS request_id     varchar(64)   NOT NULL;
++ALTER TABLE public.sms_requests ADD COLUMN IF NOT EXISTS phone_number   varchar(32)   NOT NULL;
++ALTER TABLE public.sms_requests ADD COLUMN IF NOT EXISTS otp            varchar(12)   NULL;
++ALTER TABLE public.sms_requests ADD COLUMN IF NOT EXISTS message        text          NOT NULL;
++ALTER TABLE public.sms_requests ADD COLUMN IF NOT EXISTS status         varchar(16)   NOT NULL DEFAULT 'pending';
++ALTER TABLE public.sms_requests ADD COLUMN IF NOT EXISTS device_id      varchar(128)  NULL;
++ALTER TABLE public.sms_requests ADD COLUMN IF NOT EXISTS error_message  text          NULL;
++ALTER TABLE public.sms_requests ADD COLUMN IF NOT EXISTS purpose        varchar(24)   NOT NULL DEFAULT 'login';
++ALTER TABLE public.sms_requests ADD COLUMN IF NOT EXISTS created_at     timestamp without time zone NOT NULL DEFAULT now();
++ALTER TABLE public.sms_requests ADD COLUMN IF NOT EXISTS updated_at     timestamp without time zone NOT NULL DEFAULT now();
++ALTER TABLE public.sms_requests ADD COLUMN IF NOT EXISTS dispatched_at  timestamp without time zone NULL;
++ALTER TABLE public.sms_requests ADD COLUMN IF NOT EXISTS sent_at        timestamp without time zone NULL;
++
++-- Indexes (must match SmsRequestsTable.init{} in Tables.kt EXACTLY).
++-- request_id is the public lookup key for the gateway status callbacks.
++CREATE UNIQUE INDEX IF NOT EXISTS ux_sms_requests_request_id
++  ON public.sms_requests (request_id);
++
++-- Recovery query: pending/dispatched requests, oldest first
++-- (GET /api/v1/gateway/pending).
++CREATE INDEX IF NOT EXISTS ix_sms_requests_status_created
++  ON public.sms_requests (status, created_at);
++
++-- ---------------------------------------------------------------------------
++-- updated_at auto-touch triggers
++-- ---------------------------------------------------------------------------
++-- The repositories set updated_at on every write, but we also install
++-- Postgres-side triggers so any ad-hoc SQL UPDATE (e.g. a manual deactivation
++-- in the editor) keeps the column honest.
++-- ---------------------------------------------------------------------------
++
++CREATE OR REPLACE FUNCTION public.touch_otp_gateway_updated_at()
++RETURNS trigger AS $$
++BEGIN
++  NEW.updated_at = now();
++  RETURN NEW;
++END;
++$$ LANGUAGE plpgsql;
++
++DROP TRIGGER IF EXISTS trg_otp_gateway_devices_touch_updated_at ON public.otp_gateway_devices;
++CREATE TRIGGER trg_otp_gateway_devices_touch_updated_at
++  BEFORE UPDATE ON public.otp_gateway_devices
++  FOR EACH ROW
++  EXECUTE FUNCTION public.touch_otp_gateway_updated_at();
++
++DROP TRIGGER IF EXISTS trg_sms_requests_touch_updated_at ON public.sms_requests;
++CREATE TRIGGER trg_sms_requests_touch_updated_at
++  BEFORE UPDATE ON public.sms_requests
++  FOR EACH ROW
++  EXECUTE FUNCTION public.touch_otp_gateway_updated_at();
++
++-- End of migration.
+diff --git a/server/src/main/kotlin/com/littlebridge/enrollplus/Application.kt b/server/src/main/kotlin/com/littlebridge/enrollplus/Application.kt
+index 98d1f54..a060e01 100644
+--- a/server/src/main/kotlin/com/littlebridge/enrollplus/Application.kt
++++ b/server/src/main/kotlin/com/littlebridge/enrollplus/Application.kt
+@@ -63,6 +63,7 @@ import com.littlebridge.enrollplus.feature.config.appStatusRouting
+ import com.littlebridge.enrollplus.feature.config.versionRouting
+ import com.littlebridge.enrollplus.feature.content.landingRouting
+ import com.littlebridge.enrollplus.feature.content.supportRouting
++import com.littlebridge.enrollplus.feature.gateway.api.gatewayRouting
+ import com.littlebridge.enrollplus.feature.media.mediaRouting
+ import com.littlebridge.enrollplus.feature.notification.api.notificationRouting
+ import com.littlebridge.enrollplus.feature.notifications.notificationsRouting
+@@ -248,6 +249,17 @@ fun Application.module() {
+         // the token env is empty.
+         otpAdminRouting()
+ 
++        // OTPSender SMS-gateway integration (feature/setup_notification).
++        // Machine-to-machine peer authenticated via the X-Gateway-Token header.
++        // Entire route group is unmounted (404) unless OTP_GATEWAY_TOKEN is set
++        // — same ops-only convention as otpAdminRouting above.
++        //   POST /api/v1/gateway/register
++        //   POST /api/v1/gateway/heartbeat
++        //   GET  /api/v1/gateway/requests/{requestId}
++        //   POST /api/v1/gateway/requests/{requestId}/status
++        //   GET  /api/v1/gateway/pending
++        gatewayRouting()
++
+         // Authenticated
+         userDetailsRouting()
+         userProfileRouting()
+diff --git a/server/src/main/kotlin/com/littlebridge/enrollplus/db/DatabaseFactory.kt b/server/src/main/kotlin/com/littlebridge/enrollplus/db/DatabaseFactory.kt
+index a259c42..9fd9756 100644
+--- a/server/src/main/kotlin/com/littlebridge/enrollplus/db/DatabaseFactory.kt
++++ b/server/src/main/kotlin/com/littlebridge/enrollplus/db/DatabaseFactory.kt
+@@ -152,6 +152,11 @@ object DatabaseFactory {
+         // Notification spine + push registry + link approval (audit part-2 RA-41/42/46/48/50)
+         NotificationsTable,
+         DeviceTokensTable,
++        // OTPSender SMS-gateway integration (feature/setup_notification):
++        // device registry + SMS request queue. FK-free (device_id is a soft
++        // reference) so declaration order vs other tables does not matter.
++        OtpGatewayDevicesTable,
++        SmsRequestsTable,
+         ParentChildLinksTable,
+         // Non-teaching staff vertical (RA-S17 — Admin People sub-tabs)
+         NonTeachingStaffTable,
+diff --git a/server/src/main/kotlin/com/littlebridge/enrollplus/db/Tables.kt b/server/src/main/kotlin/com/littlebridge/enrollplus/db/Tables.kt
+index 5ee854a..bf817d2 100644
+--- a/server/src/main/kotlin/com/littlebridge/enrollplus/db/Tables.kt
++++ b/server/src/main/kotlin/com/littlebridge/enrollplus/db/Tables.kt
+@@ -905,6 +905,90 @@ object DeviceTokensTable : UUIDTable("device_tokens", "id") {
+     }
+ }
+ 
++// =====================================================================
++// otp_gateway_devices  (feature/setup_notification — OTPSender gateway registry)
++// =====================================================================
++//
++// The OTPSender Android app is an SMS GATEWAY: instead of paying an SMS vendor,
++// the backend creates an SMS request, sends an FCM data-message to a registered
++// OTPSender phone, and that phone sends the SMS from its own SIM. This table is
++// the registry of those gateway devices.
++//
++//   POST /api/v1/gateway/register   -> upsert a row (deviceId is the natural key)
++//   POST /api/v1/gateway/heartbeat   -> refresh last_seen_at + battery/network
++//
++// Device selection (OtpService): is_active = true AND last_seen_at within the
++// liveness window (5 min); prefer the most recently active device. Columns
++// mirror database/migrations/setup_otp_gateway.sql EXACTLY.
++object OtpGatewayDevicesTable : UUIDTable("otp_gateway_devices", "id") {
++    val deviceId    = varchar("device_id", 128)                 // natural key — OTPSender install id
++    val deviceName  = varchar("device_name", 128).nullable()    // human label (e.g. "Office Pixel")
++    val fcmToken    = text("fcm_token")                          // OTPSender FCM token (separate project)
++    val appVersion  = varchar("app_version", 64).nullable()     // OTPSender BuildConfig.VERSION_NAME
++    val isActive    = bool("is_active").default(true)           // soft-deactivated when retired
++    val batteryLevel = integer("battery_level").nullable()      // 0..100, from heartbeat
++    val networkType = varchar("network_type", 32).nullable()    // wifi | cellular | …, from heartbeat
++    val lastSeenAt  = timestamp("last_seen_at").nullable()      // bumped by register + heartbeat
++    val createdAt   = timestamp("created_at")
++    val updatedAt   = timestamp("updated_at")
++
++    init {
++        // A device_id is globally unique (one OTPSender install). Re-registering
++        // the same device_id refreshes its row via UPDATE — never a duplicate.
++        uniqueIndex("ux_otp_gateway_devices_device_id", deviceId)
++        // Fast selection of the freshest active gateway for dispatch.
++        index(
++            customIndexName = "ix_otp_gateway_devices_active_seen",
++            isUnique = false,
++            isActive,
++            lastSeenAt
++        )
++    }
++}
++
++// =====================================================================
++// sms_requests  (feature/setup_notification — OTPSender SMS request queue)
++// =====================================================================
++//
++// One row per OTP-SMS the backend asks an OTPSender gateway to deliver. The
++// OTP itself is generated/stored in auth_otps; this table is the DELIVERY
++// request the gateway polls / receives via FCM and reports back on.
++//
++//   (OtpService) create row (status=pending) -> FCM data-message to gateway
++//   GET  /api/v1/gateway/requests/{requestId}            -> gateway fetches detail
++//   GET  /api/v1/gateway/pending                          -> recovery: list pending
++//   POST /api/v1/gateway/requests/{requestId}/status      -> gateway reports SENT|FAILED
++//
++// `request_id` is the public, client-facing id (a UUID string returned to the
++// auth caller and echoed in the FCM payload); `id` is the internal PK.
++// Columns mirror database/migrations/setup_otp_gateway.sql EXACTLY.
++object SmsRequestsTable : UUIDTable("sms_requests", "id") {
++    val requestId    = varchar("request_id", 64)                 // public id (UUID string)
++    val phoneNumber  = varchar("phone_number", 32)               // E.164 destination
++    val otp          = varchar("otp", 12).nullable()             // plaintext code the gateway must send
++    val message      = text("message")                           // full SMS body
++    val status       = varchar("status", 16).default("pending")  // pending | dispatched | sent | failed
++    val deviceId     = varchar("device_id", 128).nullable()      // assigned OTPSender device_id (null while pending)
++    val errorMessage = text("error_message").nullable()          // populated when status=failed
++    val purpose      = varchar("purpose", 24).default("login")   // login | signup | …
++    val createdAt    = timestamp("created_at")
++    val updatedAt    = timestamp("updated_at")
++    val dispatchedAt = timestamp("dispatched_at").nullable()     // when FCM was sent to the gateway
++    val sentAt       = timestamp("sent_at").nullable()           // when the gateway reported SENT
++
++    init {
++        // request_id is the public lookup key for the gateway status callbacks.
++        uniqueIndex("ux_sms_requests_request_id", requestId)
++        // Recovery query: pending requests, oldest first.
++        index(
++            customIndexName = "ix_sms_requests_status_created",
++            isUnique = false,
++            status,
++            createdAt
++        )
++    }
++}
++
+ // =====================================================================
+ // parent_child_links  (RA-48 — parent→child link approval workflow)
+ // =====================================================================
+diff --git a/server/src/main/kotlin/com/littlebridge/enrollplus/feature/auth/AuthRouting.kt b/server/src/main/kotlin/com/littlebridge/enrollplus/feature/auth/AuthRouting.kt
+index 2d954b7..07701f4 100644
+--- a/server/src/main/kotlin/com/littlebridge/enrollplus/feature/auth/AuthRouting.kt
++++ b/server/src/main/kotlin/com/littlebridge/enrollplus/feature/auth/AuthRouting.kt
+@@ -88,7 +88,10 @@ data class SendOtpResponse(
+     @SerialName("expires_at") val expiresAt: String,
+     @SerialName("resend_count") val resendCount: Int,
+     @SerialName("dev_code") val devCode: String? = null,
+-    val message: String
++    val message: String,
++    // OTPSender gateway SMS request id (feature/setup_notification). Non-null only
++    // when the OTP was routed through the gateway; null on the direct-SMS path.
++    @SerialName("request_id") val requestId: String? = null,
+ )
+ 
+ @Serializable
+@@ -291,7 +294,8 @@ fun Route.authRouting() {
+                         expiresAt = result.expiresAt.toString(),
+                         resendCount = result.resendCount,
+                         devCode = result.devCode,
+-                        message = "OTP sent. Valid for 10 minutes."
++                        message = "OTP sent. Valid for 10 minutes.",
++                        requestId = result.requestId,
+                     ),
+                     message = "OTP sent"
+                 )
+diff --git a/server/src/main/kotlin/com/littlebridge/enrollplus/feature/auth/OtpService.kt b/server/src/main/kotlin/com/littlebridge/enrollplus/feature/auth/OtpService.kt
+index 2738ca8..98ea567 100644
+--- a/server/src/main/kotlin/com/littlebridge/enrollplus/feature/auth/OtpService.kt
++++ b/server/src/main/kotlin/com/littlebridge/enrollplus/feature/auth/OtpService.kt
+@@ -63,6 +63,8 @@ package com.littlebridge.enrollplus.feature.auth
+ import com.littlebridge.enrollplus.db.AuthOtpsTable
+ import com.littlebridge.enrollplus.db.DatabaseFactory.dbQuery
+ import com.littlebridge.enrollplus.db.OtpDeliveryAttemptsTable
++import com.littlebridge.enrollplus.feature.auth.delivery.OtpMessageTemplates
++import com.littlebridge.enrollplus.feature.gateway.service.GatewaySmsService
+ import org.jetbrains.exposed.sql.vendors.ForUpdateOption
+ import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+ import org.jetbrains.exposed.sql.SqlExpressionBuilder.less
+@@ -87,7 +89,14 @@ sealed class OtpSendResult {
+         val identifier: String,
+         val expiresAt: Instant,
+         val resendCount: Int,
+-        val devCode: String?           // only populated in dev
++        val devCode: String?,          // only populated in dev
++        /**
++         * OTPSender gateway SMS request id (feature/setup_notification). Non-null
++         * only when the OTP was routed through the gateway (OTP_GATEWAY_ENABLED=true,
++         * phone identifier). Null on the direct-provider path. Surfaced to the auth
++         * client so it can correlate the eventual SMS-gateway delivery.
++         */
++        val requestId: String? = null,
+     ) : OtpSendResult()
+     object RateLimited : OtpSendResult()
+     data class DeliveryFailed(val reason: String) : OtpSendResult()
+@@ -140,6 +149,12 @@ object OtpService {
+ 
+     private val rng = SecureRandom()
+ 
++    /**
++     * OTPSender gateway dispatcher (feature/setup_notification). Lazily held so
++     * the direct-provider path is unaffected when the gateway is disabled.
++     */
++    private val gatewaySmsService by lazy { GatewaySmsService() }
++
+     // --------------------------------------------------------------
+     // SEND
+     // --------------------------------------------------------------
+@@ -244,6 +259,61 @@ object OtpService {
+         }
+         if (rateLimited) return OtpSendResult.RateLimited
+ 
++        // ----------------------------------------------------------------
++        // OTPSender gateway path (feature/setup_notification)
++        // ----------------------------------------------------------------
++        // When the gateway is enabled (OTP_GATEWAY_ENABLED=true) AND this is a
++        // PHONE identifier, we DO NOT call any SMS provider. Instead:
++        //   Store OTP (done above) → create an SMS request → locate an active
++        //   OTPSender device → push an FCM data-message → return the requestId.
++        // The OTPSender phone sends the SMS from its own SIM. If no device is
++        // live the request is left pending (the OTPSender recovery flow picks it
++        // up) — we NEVER fail OTP generation on that account.
++        //
++        // Email identifiers keep using the direct delivery chain below (SMTP),
++        // since the gateway only sends SMS.
++        if (identifierType != "email" && GatewaySmsService.isEnabled()) {
++            val smsBody = OtpMessageTemplates.smsBody(code, expiryMinutes, locale)
++            val gw = runCatching {
++                gatewaySmsService.sendOtpSms(
++                    phoneNumber = identifier,
++                    otp = code,
++                    message = smsBody,
++                    purpose = purpose,
++                )
++            }.getOrElse {
++                log.warn("[OtpService] gateway dispatch threw: {}", it.message)
++                null
++            }
++
++            // Reflect the gateway as the delivery channel/provider on the
++            // auth_otps row so /verify-otp + admin tooling can see "otp_gateway".
++            val now = Instant.now()
++            dbQuery {
++                AuthOtpsTable.update({
++                    (AuthOtpsTable.identifier eq identifier) and (AuthOtpsTable.purpose eq purpose)
++                }) {
++                    it[deliveryChannel] = "sms"
++                    it[deliveryProvider] = "otp_gateway"
++                    it[providerMessageId] = gw?.requestId
++                    it[updatedAt] = now
++                }
++            }
++
++            val resendsNow = dbQuery {
++                AuthOtpsTable.selectAll()
++                    .where { (AuthOtpsTable.identifier eq identifier) and (AuthOtpsTable.purpose eq purpose) }
++                    .single()[AuthOtpsTable.resendCount].toInt()
++            }
++            return OtpSendResult.Sent(
++                identifier = identifier,
++                expiresAt = expires,
++                resendCount = resendsNow,
++                devCode = if (devReturnCode) code else null,
++                requestId = gw?.requestId,
++            )
++        }
++
+         // Deliver via the multi-provider chain (WhatsApp Cloud → Fast2SMS →
+         // MSG91 → Twilio → SMTP → Console).  The dispatcher picks the
+         // cheapest configured provider that supports this identifier type.
+diff --git a/server/src/main/kotlin/com/littlebridge/enrollplus/feature/gateway/api/GatewayRouting.kt b/server/src/main/kotlin/com/littlebridge/enrollplus/feature/gateway/api/GatewayRouting.kt
+new file mode 100644
+index 0000000..0967a41
+--- /dev/null
++++ b/server/src/main/kotlin/com/littlebridge/enrollplus/feature/gateway/api/GatewayRouting.kt
+@@ -0,0 +1,250 @@
++/*
++ * File: GatewayRouting.kt
++ * Module: feature.gateway.api
++ *
++ * HTTP surface for the OTPSender SMS gateway integration. The OTPSender Android
++ * app talks to these endpoints to register itself, stay alive, fetch SMS work,
++ * and report delivery outcomes:
++ *
++ *   POST /api/v1/gateway/register                       — register / refresh a gateway device
++ *   POST /api/v1/gateway/heartbeat                       — liveness + battery/network telemetry
++ *   GET  /api/v1/gateway/requests/{requestId}            — fetch one SMS request
++ *   POST /api/v1/gateway/requests/{requestId}/status     — report SENT | FAILED
++ *   GET  /api/v1/gateway/pending                          — recovery: list pending requests
++ *
++ * AUTHENTICATION
++ *   The gateway is a machine-to-machine peer, NOT a logged-in user, so it
++ *   authenticates with a shared secret in the `X-Gateway-Token` header rather
++ *   than a JWT. The secret lives in the OTP_GATEWAY_TOKEN env var. Following
++ *   the same ops-only convention as OtpAdminRouting: when OTP_GATEWAY_TOKEN is
++ *   UNSET the entire route group is 404'd (its existence is not advertised);
++ *   when set, every request must present a matching token (constant-time
++ *   compared) or it is 403'd.
++ *
++ * COLLABORATORS (no DI on the server — see Notify.kt / NotificationRouting.kt)
++ *   Module-level singletons hold the two repositories. They are stateless
++ *   beyond their DB handles.
++ */
++package com.littlebridge.enrollplus.feature.gateway.api
++
++import com.littlebridge.enrollplus.core.fail
++import com.littlebridge.enrollplus.core.ok
++import com.littlebridge.enrollplus.feature.gateway.dto.GatewayHeartbeatRequest
++import com.littlebridge.enrollplus.feature.gateway.dto.GatewayHeartbeatResponse
++import com.littlebridge.enrollplus.feature.gateway.dto.GatewayRegisterRequest
++import com.littlebridge.enrollplus.feature.gateway.dto.GatewayRegisterResponse
++import com.littlebridge.enrollplus.feature.gateway.dto.GatewayStatusUpdateRequest
++import com.littlebridge.enrollplus.feature.gateway.dto.GatewayStatusUpdateResponse
++import com.littlebridge.enrollplus.feature.gateway.dto.PendingRequestsResponse
++import com.littlebridge.enrollplus.feature.gateway.dto.SmsRequestDto
++import com.littlebridge.enrollplus.feature.gateway.repository.OtpGatewayDeviceRepository
++import com.littlebridge.enrollplus.feature.gateway.repository.SmsRequestRepository
++import com.littlebridge.enrollplus.feature.gateway.repository.SmsRequestRow
++import com.littlebridge.enrollplus.feature.gateway.repository.SmsRequestStatus
++import io.ktor.http.HttpStatusCode
++import io.ktor.server.application.ApplicationCall
++import io.ktor.server.request.receive
++import io.ktor.server.routing.Route
++import io.ktor.server.routing.get
++import io.ktor.server.routing.post
++import io.ktor.server.routing.route
++
++// ------------------------------------------------------------------
++// No-DI collaborators — module-level singletons.
++// ------------------------------------------------------------------
++private val gatewayDeviceRepository = OtpGatewayDeviceRepository()
++private val smsRequestRepository = SmsRequestRepository()
++
++private fun gatewayToken(): String? =
++    System.getenv("OTP_GATEWAY_TOKEN")?.takeIf { it.isNotBlank() }
++
++private fun isGatewayEnabled(): Boolean = gatewayToken() != null
++
++/** Constant-time string compare — same pattern as OtpService / OtpAdminRouting. */
++private fun ctEq(a: String, b: String): Boolean {
++    if (a.length != b.length) return false
++    var d = 0
++    for (i in a.indices) d = d or (a[i].code xor b[i].code)
++    return d == 0
++}
++
++/**
++ * Validate the X-Gateway-Token header. Returns true when authorised; otherwise
++ * writes a 403 and returns false. (The 404-when-disabled gate is applied once
++ * at mount time in [gatewayRouting].)
++ */
++private suspend fun ApplicationCall.authorizeGateway(): Boolean {
++    val tok = request.headers["X-Gateway-Token"]
++    val expected = gatewayToken()
++    if (expected == null || tok.isNullOrBlank() || !ctEq(tok, expected)) {
++        fail("forbidden", HttpStatusCode.Forbidden, "GATEWAY_FORBIDDEN")
++        return false
++    }
++    return true
++}
++
++private fun SmsRequestRow.toDto() = SmsRequestDto(
++    requestId = requestId,
++    phoneNumber = phoneNumber,
++    otp = otp,
++    message = message,
++    status = status,
++    deviceId = deviceId,
++    purpose = purpose,
++    createdAt = createdAt.toString(),
++    dispatchedAt = dispatchedAt?.toString(),
++    sentAt = sentAt?.toString(),
++    errorMessage = errorMessage,
++)
++
++/**
++ * Mounts the OTPSender gateway endpoints. The whole group is invisible (404)
++ * unless OTP_GATEWAY_TOKEN is configured.
++ */
++fun Route.gatewayRouting() {
++    if (!isGatewayEnabled()) return  // entire surface is unmounted without OTP_GATEWAY_TOKEN
++
++    route("/api/v1/gateway") {
++
++        // -------- register / refresh a gateway device --------
++        post("/register") {
++            if (!call.authorizeGateway()) return@post
++
++            val req = runCatching { call.receive<GatewayRegisterRequest>() }.getOrNull()
++                ?: run {
++                    call.fail("Invalid body: { deviceId, fcmToken, deviceName?, appVersion? }")
++                    return@post
++                }
++            if (req.deviceId.isBlank() || req.fcmToken.isBlank()) {
++                call.fail("deviceId and fcmToken are required")
++                return@post
++            }
++
++            gatewayDeviceRepository.register(
++                deviceId = req.deviceId,
++                fcmToken = req.fcmToken,
++                deviceName = req.deviceName,
++                appVersion = req.appVersion,
++            )
++
++            call.ok(
++                GatewayRegisterResponse(deviceId = req.deviceId, registered = true),
++                message = "Gateway device registered",
++            )
++        }
++
++        // -------- heartbeat --------
++        post("/heartbeat") {
++            if (!call.authorizeGateway()) return@post
++
++            val req = runCatching { call.receive<GatewayHeartbeatRequest>() }.getOrNull()
++                ?: run {
++                    call.fail("Invalid body: { deviceId, batteryLevel?, networkType? }")
++                    return@post
++                }
++            if (req.deviceId.isBlank()) {
++                call.fail("deviceId is required")
++                return@post
++            }
++
++            val updated = gatewayDeviceRepository.heartbeat(
++                deviceId = req.deviceId,
++                batteryLevel = req.batteryLevel,
++                networkType = req.networkType,
++            )
++            if (updated == 0) {
++                call.fail(
++                    "Unknown device — call /register first.",
++                    HttpStatusCode.NotFound, "GATEWAY_DEVICE_NOT_FOUND",
++                )
++                return@post
++            }
++
++            call.ok(
++                GatewayHeartbeatResponse(deviceId = req.deviceId, acknowledged = true),
++                message = "Heartbeat acknowledged",
++            )
++        }
++
++        // -------- pending requests (recovery flow) --------
++        // NOTE: declared BEFORE the parametrised "/requests/{requestId}" route
++        // so "/pending" is never shadowed by the path parameter.
++        get("/pending") {
++            if (!call.authorizeGateway()) return@get
++
++            val limit = (call.request.queryParameters["limit"]?.toIntOrNull() ?: 100)
++                .coerceIn(1, 500)
++            val rows = smsRequestRepository.listPending(limit)
++            call.ok(
++                PendingRequestsResponse(count = rows.size, requests = rows.map { it.toDto() }),
++                message = "Pending SMS requests",
++            )
++        }
++
++        // -------- fetch one SMS request --------
++        get("/requests/{requestId}") {
++            if (!call.authorizeGateway()) return@get
++
++            val requestId = call.parameters["requestId"]
++                ?.takeIf { it.isNotBlank() }
++                ?: run { call.fail("requestId is required"); return@get }
++
++            val row = smsRequestRepository.findByRequestId(requestId)
++                ?: run {
++                    call.fail(
++                        "No SMS request with that id.",
++                        HttpStatusCode.NotFound, "SMS_REQUEST_NOT_FOUND",
++                    )
++                    return@get
++                }
++
++            call.ok(row.toDto(), message = "SMS request")
++        }
++
++        // -------- status callback (SENT | FAILED) --------
++        post("/requests/{requestId}/status") {
++            if (!call.authorizeGateway()) return@post
++
++            val requestId = call.parameters["requestId"]
++                ?.takeIf { it.isNotBlank() }
++                ?: run { call.fail("requestId is required"); return@post }
++
++            val req = runCatching { call.receive<GatewayStatusUpdateRequest>() }.getOrNull()
++                ?: run { call.fail("Invalid body: { status, errorMessage? }"); return@post }
++
++            val normalized = when (req.status.trim().uppercase()) {
++                "SENT" -> SmsRequestStatus.SENT
++                "FAILED" -> SmsRequestStatus.FAILED
++                else -> {
++                    call.fail(
++                        "status must be SENT or FAILED",
++                        HttpStatusCode.BadRequest, "BAD_STATUS",
++                    )
++                    return@post
++                }
++            }
++
++            val updated = smsRequestRepository.applyStatus(
++                requestId = requestId,
++                status = normalized,
++                errorMessage = req.errorMessage,
++            )
++            if (updated == 0) {
++                call.fail(
++                    "No SMS request with that id.",
++                    HttpStatusCode.NotFound, "SMS_REQUEST_NOT_FOUND",
++                )
++                return@post
++            }
++
++            call.ok(
++                GatewayStatusUpdateResponse(
++                    requestId = requestId,
++                    status = normalized,
++                    updated = true,
++                ),
++                message = "Status updated",
++            )
++        }
++    }
++}
+diff --git a/server/src/main/kotlin/com/littlebridge/enrollplus/feature/gateway/dto/GatewayDtos.kt b/server/src/main/kotlin/com/littlebridge/enrollplus/feature/gateway/dto/GatewayDtos.kt
+new file mode 100644
+index 0000000..0006ede
+--- /dev/null
++++ b/server/src/main/kotlin/com/littlebridge/enrollplus/feature/gateway/dto/GatewayDtos.kt
+@@ -0,0 +1,119 @@
++/*
++ * File: GatewayDtos.kt
++ * Module: feature.gateway.dto
++ *
++ * Request/response DTOs for the OTPSender gateway API. These shapes match the
++ * EXISTING OTPSender Android contract (the agreed integration) — they are NOT
++ * redesigned here:
++ *
++ *   POST /api/v1/gateway/register
++ *   POST /api/v1/gateway/heartbeat
++ *   GET  /api/v1/gateway/requests/{requestId}
++ *   POST /api/v1/gateway/requests/{requestId}/status
++ *   GET  /api/v1/gateway/pending
++ *
++ * All field names are camelCase to match the OTPSender client JSON.
++ */
++package com.littlebridge.enrollplus.feature.gateway.dto
++
++import kotlinx.serialization.Serializable
++
++// ---------------------------------------------------------------------------
++// POST /api/v1/gateway/register
++// ---------------------------------------------------------------------------
++
++/**
++ * Body of `POST /api/v1/gateway/register`. The OTPSender app registers itself
++ * (and refreshes its FCM token) so the backend can route SMS requests to it.
++ * `deviceId` is the natural key (one OTPSender install).
++ */
++@Serializable
++data class GatewayRegisterRequest(
++    val deviceId: String,
++    val fcmToken: String,
++    val deviceName: String? = null,
++    val appVersion: String? = null,
++)
++
++@Serializable
++data class GatewayRegisterResponse(
++    val deviceId: String,
++    val registered: Boolean,
++)
++
++// ---------------------------------------------------------------------------
++// POST /api/v1/gateway/heartbeat
++// ---------------------------------------------------------------------------
++
++/**
++ * Body of `POST /api/v1/gateway/heartbeat`. The OTPSender app pings periodically
++ * to keep itself in the active-device window and report live telemetry.
++ */
++@Serializable
++data class GatewayHeartbeatRequest(
++    val deviceId: String,
++    val batteryLevel: Int? = null,
++    val networkType: String? = null,
++)
++
++@Serializable
++data class GatewayHeartbeatResponse(
++    val deviceId: String,
++    val acknowledged: Boolean,
++)
++
++// ---------------------------------------------------------------------------
++// GET /api/v1/gateway/requests/{requestId}   &   GET /api/v1/gateway/pending
++// ---------------------------------------------------------------------------
++
++/**
++ * One SMS request as the OTPSender app consumes it. Carries everything the
++ * gateway needs to send the SMS: the destination, the body, and (for
++ * convenience) the OTP itself.
++ */
++@Serializable
++data class SmsRequestDto(
++    val requestId: String,
++    val phoneNumber: String,
++    val otp: String? = null,
++    val message: String,
++    val status: String,
++    val deviceId: String? = null,
++    val purpose: String,
++    val createdAt: String,
++    val dispatchedAt: String? = null,
++    val sentAt: String? = null,
++    val errorMessage: String? = null,
++)
++
++/**
++ * Body of `GET /api/v1/gateway/pending` — the recovery list a restarted
++ * gateway polls to pick up in-flight (pending / dispatched) requests.
++ */
++@Serializable
++data class PendingRequestsResponse(
++    val count: Int,
++    val requests: List<SmsRequestDto>,
++)
++
++// ---------------------------------------------------------------------------
++// POST /api/v1/gateway/requests/{requestId}/status
++// ---------------------------------------------------------------------------
++
++/**
++ * Body of `POST /api/v1/gateway/requests/{requestId}/status`. The OTPSender app
++ * reports the outcome of an SMS send. `status` is "SENT" or "FAILED"
++ * (case-insensitive); `errorMessage` is populated on FAILED.
++ */
++@Serializable
++data class GatewayStatusUpdateRequest(
++    val status: String,
++    val errorMessage: String? = null,
++)
++
++@Serializable
++data class GatewayStatusUpdateResponse(
++    val requestId: String,
++    val status: String,
++    val updated: Boolean,
++)
+diff --git a/server/src/main/kotlin/com/littlebridge/enrollplus/feature/gateway/repository/OtpGatewayDeviceRepository.kt b/server/src/main/kotlin/com/littlebridge/enrollplus/feature/gateway/repository/OtpGatewayDeviceRepository.kt
+new file mode 100644
+index 0000000..52bb559
+--- /dev/null
++++ b/server/src/main/kotlin/com/littlebridge/enrollplus/feature/gateway/repository/OtpGatewayDeviceRepository.kt
+@@ -0,0 +1,158 @@
++/*
++ * File: OtpGatewayDeviceRepository.kt
++ * Module: feature.gateway.repository
++ *
++ * Persistence layer for the otp_gateway_devices table — the ONLY place that
++ * reads or writes OTPSender gateway-device rows. The gateway routing and the
++ * OtpService (device selection) talk to gateway devices through this repository
++ * so the registration/liveness invariants stay in one spot.
++ *
++ * REGISTRATION INVARIANT
++ *   The natural key is `device_id` (one OTPSender install). Registration is
++ *   idempotent on it:
++ *     - NEW device_id      → INSERT a fresh row.
++ *     - EXISTING device_id → UPDATE its fcm_token / metadata, re-assert
++ *                            is_active = true, refresh last_seen_at.
++ *   A device's FCM token rotates over time; re-registration captures the new
++ *   token without creating a duplicate row.
++ *
++ * DEVICE SELECTION (OTP dispatch)
++ *   activeGatewayForDispatch(window) returns the most-recently-active device
++ *   whose is_active = true AND last_seen_at is within the liveness window
++ *   (default 5 minutes). When none qualifies it returns null and the caller
++ *   leaves the SMS request pending — it NEVER fails OTP generation.
++ */
++package com.littlebridge.enrollplus.feature.gateway.repository
++
++import com.littlebridge.enrollplus.db.DatabaseFactory.dbQuery
++import com.littlebridge.enrollplus.db.OtpGatewayDevicesTable
++import org.jetbrains.exposed.sql.SortOrder
++import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
++import org.jetbrains.exposed.sql.SqlExpressionBuilder.greaterEq
++import org.jetbrains.exposed.sql.and
++import org.jetbrains.exposed.sql.insert
++import org.jetbrains.exposed.sql.selectAll
++import org.jetbrains.exposed.sql.update
++import java.time.Instant
++import java.time.temporal.ChronoUnit
++import java.util.UUID
++
++/**
++ * Projection of a gateway-device row for the service / API layers.
++ */
++data class GatewayDeviceRow(
++    val id: UUID,
++    val deviceId: String,
++    val deviceName: String?,
++    val fcmToken: String,
++    val appVersion: String?,
++    val isActive: Boolean,
++    val batteryLevel: Int?,
++    val networkType: String?,
++    val lastSeenAt: Instant?,
++)
++
++class OtpGatewayDeviceRepository {
++
++    /**
++     * Register (or re-register) an OTPSender gateway device.
++     *
++     * Idempotent on [deviceId]: a re-registration refreshes fcm_token,
++     * device_name, app_version, re-asserts is_active = true, and bumps
++     * last_seen_at. Returns true when a new row was inserted, false on update.
++     */
++    suspend fun register(
++        deviceId: String,
++        fcmToken: String,
++        deviceName: String? = null,
++        appVersion: String? = null,
++    ): Boolean = dbQuery {
++        val now = Instant.now()
++        val existing = OtpGatewayDevicesTable.selectAll()
++            .where { OtpGatewayDevicesTable.deviceId eq deviceId }
++            .singleOrNull()
++
++        if (existing == null) {
++            OtpGatewayDevicesTable.insert {
++                it[OtpGatewayDevicesTable.deviceId] = deviceId
++                it[OtpGatewayDevicesTable.deviceName] = deviceName
++                it[OtpGatewayDevicesTable.fcmToken] = fcmToken
++                it[OtpGatewayDevicesTable.appVersion] = appVersion
++                it[isActive] = true
++                it[lastSeenAt] = now
++                it[createdAt] = now
++                it[updatedAt] = now
++            }
++            true
++        } else {
++            OtpGatewayDevicesTable.update({ OtpGatewayDevicesTable.deviceId eq deviceId }) {
++                it[OtpGatewayDevicesTable.fcmToken] = fcmToken
++                if (deviceName != null) it[OtpGatewayDevicesTable.deviceName] = deviceName
++                if (appVersion != null) it[OtpGatewayDevicesTable.appVersion] = appVersion
++                it[isActive] = true
++                it[lastSeenAt] = now
++                it[updatedAt] = now
++            }
++            false
++        }
++    }
++
++    /**
++     * Heartbeat: refresh last_seen_at and (optionally) battery_level +
++     * network_type for [deviceId]. Returns the number of rows updated (0 when
++     * the device is unknown — the caller surfaces a 404).
++     */
++    suspend fun heartbeat(
++        deviceId: String,
++        batteryLevel: Int? = null,
++        networkType: String? = null,
++    ): Int = dbQuery {
++        val now = Instant.now()
++        OtpGatewayDevicesTable.update({ OtpGatewayDevicesTable.deviceId eq deviceId }) {
++            it[lastSeenAt] = now
++            it[updatedAt] = now
++            if (batteryLevel != null) it[OtpGatewayDevicesTable.batteryLevel] = batteryLevel
++            if (networkType != null) it[OtpGatewayDevicesTable.networkType] = networkType
++            // A device sending heartbeats is alive — re-assert active.
++            it[isActive] = true
++        }
++    }
++
++    /**
++     * The freshest ACTIVE gateway eligible for dispatch: is_active = true AND
++     * last_seen_at within [windowMinutes] (default 5). Returns the most
++     * recently active device, or null when none qualifies (→ leave pending).
++     */
++    suspend fun activeGatewayForDispatch(windowMinutes: Long = 5): GatewayDeviceRow? = dbQuery {
++        val cutoff = Instant.now().minus(windowMinutes, ChronoUnit.MINUTES)
++        OtpGatewayDevicesTable.selectAll()
++            .where {
++                (OtpGatewayDevicesTable.isActive eq true) and
++                    (OtpGatewayDevicesTable.lastSeenAt greaterEq cutoff)
++            }
++            .orderBy(OtpGatewayDevicesTable.lastSeenAt, SortOrder.DESC)
++            .limit(1)
++            .map { it.toRow() }
++            .singleOrNull()
++    }
++
++    /** Look up a single device by its natural key. */
++    suspend fun findByDeviceId(deviceId: String): GatewayDeviceRow? = dbQuery {
++        OtpGatewayDevicesTable.selectAll()
++            .where { OtpGatewayDevicesTable.deviceId eq deviceId }
++            .map { it.toRow() }
++            .singleOrNull()
++    }
++
++    private fun org.jetbrains.exposed.sql.ResultRow.toRow() = GatewayDeviceRow(
++        id = this[OtpGatewayDevicesTable.id].value,
++        deviceId = this[OtpGatewayDevicesTable.deviceId],
++        deviceName = this[OtpGatewayDevicesTable.deviceName],
++        fcmToken = this[OtpGatewayDevicesTable.fcmToken],
++        appVersion = this[OtpGatewayDevicesTable.appVersion],
++        isActive = this[OtpGatewayDevicesTable.isActive],
++        batteryLevel = this[OtpGatewayDevicesTable.batteryLevel],
++        networkType = this[OtpGatewayDevicesTable.networkType],
++        lastSeenAt = this[OtpGatewayDevicesTable.lastSeenAt],
++    )
++}
+diff --git a/server/src/main/kotlin/com/littlebridge/enrollplus/feature/gateway/repository/SmsRequestRepository.kt b/server/src/main/kotlin/com/littlebridge/enrollplus/feature/gateway/repository/SmsRequestRepository.kt
+new file mode 100644
+index 0000000..16a58da
+--- /dev/null
++++ b/server/src/main/kotlin/com/littlebridge/enrollplus/feature/gateway/repository/SmsRequestRepository.kt
+@@ -0,0 +1,166 @@
++/*
++ * File: SmsRequestRepository.kt
++ * Module: feature.gateway.repository
++ *
++ * Persistence layer for the sms_requests table — the ONLY place that reads or
++ * writes SMS-delivery request rows for the OTPSender gateway integration.
++ *
++ * LIFECYCLE
++ *   pending     → created by OtpService when an OTP must go out via the gateway
++ *                 (no active gateway found yet, OR awaiting FCM delivery).
++ *   dispatched  → an FCM data-message has been pushed to a chosen gateway
++ *                 device; device_id + dispatched_at are set.
++ *   sent        → the gateway reported successful SMS delivery (sent_at set).
++ *   failed      → the gateway reported a failure (error_message set).
++ *
++ * The `request_id` is the public, client-facing id (a UUID string). The
++ * internal PK `id` is never exposed.
++ */
++package com.littlebridge.enrollplus.feature.gateway.repository
++
++import com.littlebridge.enrollplus.db.DatabaseFactory.dbQuery
++import com.littlebridge.enrollplus.db.SmsRequestsTable
++import org.jetbrains.exposed.sql.SortOrder
++import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
++import org.jetbrains.exposed.sql.insert
++import org.jetbrains.exposed.sql.or
++import org.jetbrains.exposed.sql.selectAll
++import org.jetbrains.exposed.sql.update
++import java.time.Instant
++import java.util.UUID
++
++/** Projection of an sms_requests row for the service / API layers. */
++data class SmsRequestRow(
++    val id: UUID,
++    val requestId: String,
++    val phoneNumber: String,
++    val otp: String?,
++    val message: String,
++    val status: String,
++    val deviceId: String?,
++    val errorMessage: String?,
++    val purpose: String,
++    val createdAt: Instant,
++    val updatedAt: Instant,
++    val dispatchedAt: Instant?,
++    val sentAt: Instant?,
++)
++
++object SmsRequestStatus {
++    const val PENDING = "pending"
++    const val DISPATCHED = "dispatched"
++    const val SENT = "sent"
++    const val FAILED = "failed"
++}
++
++class SmsRequestRepository {
++
++    /**
++     * Create a brand-new SMS request in the `pending` state. Returns the
++     * generated public [request_id] (a UUID string) so the caller can echo it
++     * back to the auth client and embed it in the FCM payload.
++     */
++    suspend fun create(
++        phoneNumber: String,
++        otp: String?,
++        message: String,
++        purpose: String,
++    ): String = dbQuery {
++        val now = Instant.now()
++        val requestId = UUID.randomUUID().toString()
++        SmsRequestsTable.insert {
++            it[SmsRequestsTable.requestId] = requestId
++            it[SmsRequestsTable.phoneNumber] = phoneNumber
++            it[SmsRequestsTable.otp] = otp
++            it[SmsRequestsTable.message] = message
++            it[status] = SmsRequestStatus.PENDING
++            it[SmsRequestsTable.purpose] = purpose
++            it[createdAt] = now
++            it[updatedAt] = now
++        }
++        requestId
++    }
++
++    /**
++     * Mark a request as dispatched to [deviceId] (an FCM data-message was
++     * pushed to that gateway). Sets dispatched_at. Returns rows updated.
++     */
++    suspend fun markDispatched(requestId: String, deviceId: String): Int = dbQuery {
++        val now = Instant.now()
++        SmsRequestsTable.update({ SmsRequestsTable.requestId eq requestId }) {
++            it[status] = SmsRequestStatus.DISPATCHED
++            it[SmsRequestsTable.deviceId] = deviceId
++            it[dispatchedAt] = now
++            it[updatedAt] = now
++        }
++    }
++
++    /**
++     * Apply a gateway status callback. [status] must be SENT or FAILED.
++     *   - SENT  → sets sent_at, clears error_message.
++     *   - FAILED → sets error_message.
++     * Returns rows updated (0 when request_id is unknown → caller 404s).
++     */
++    suspend fun applyStatus(
++        requestId: String,
++        status: String,
++        errorMessage: String? = null,
++    ): Int = dbQuery {
++        val now = Instant.now()
++        SmsRequestsTable.update({ SmsRequestsTable.requestId eq requestId }) {
++            it[SmsRequestsTable.status] = status
++            it[updatedAt] = now
++            when (status) {
++                SmsRequestStatus.SENT -> {
++                    it[sentAt] = now
++                    it[SmsRequestsTable.errorMessage] = null
++                }
++                SmsRequestStatus.FAILED -> {
++                    it[SmsRequestsTable.errorMessage] = errorMessage
++                }
++            }
++        }
++    }
++
++    /** Fetch a single request by its public id. */
++    suspend fun findByRequestId(requestId: String): SmsRequestRow? = dbQuery {
++        SmsRequestsTable.selectAll()
++            .where { SmsRequestsTable.requestId eq requestId }
++            .map { it.toRow() }
++            .singleOrNull()
++    }
++
++    /**
++     * Pending requests still awaiting processing — used by the OTPSender
++     * recovery flow (GET /api/v1/gateway/pending). Returns both `pending`
++     * (never dispatched) and `dispatched` (FCM sent but not yet confirmed)
++     * rows so a gateway that restarted can pick up in-flight work. Oldest
++     * first, capped at [limit].
++     */
++    suspend fun listPending(limit: Int = 100): List<SmsRequestRow> = dbQuery {
++        SmsRequestsTable.selectAll()
++            .where {
++                (SmsRequestsTable.status eq SmsRequestStatus.PENDING) or
++                    (SmsRequestsTable.status eq SmsRequestStatus.DISPATCHED)
++            }
++            .orderBy(SmsRequestsTable.createdAt, SortOrder.ASC)
++            .limit(limit)
++            .map { it.toRow() }
++    }
++
++    private fun org.jetbrains.exposed.sql.ResultRow.toRow() = SmsRequestRow(
++        id = this[SmsRequestsTable.id].value,
++        requestId = this[SmsRequestsTable.requestId],
++        phoneNumber = this[SmsRequestsTable.phoneNumber],
++        otp = this[SmsRequestsTable.otp],
++        message = this[SmsRequestsTable.message],
++        status = this[SmsRequestsTable.status],
++        deviceId = this[SmsRequestsTable.deviceId],
++        errorMessage = this[SmsRequestsTable.errorMessage],
++        purpose = this[SmsRequestsTable.purpose],
++        createdAt = this[SmsRequestsTable.createdAt],
++        updatedAt = this[SmsRequestsTable.updatedAt],
++        dispatchedAt = this[SmsRequestsTable.dispatchedAt],
++        sentAt = this[SmsRequestsTable.sentAt],
++    )
++}
+diff --git a/server/src/main/kotlin/com/littlebridge/enrollplus/feature/gateway/service/GatewayFcmDispatcher.kt b/server/src/main/kotlin/com/littlebridge/enrollplus/feature/gateway/service/GatewayFcmDispatcher.kt
+new file mode 100644
+index 0000000..5ea80db
+--- /dev/null
++++ b/server/src/main/kotlin/com/littlebridge/enrollplus/feature/gateway/service/GatewayFcmDispatcher.kt
+@@ -0,0 +1,92 @@
++/*
++ * File: GatewayFcmDispatcher.kt
++ * Module: feature.gateway.service
++ *
++ * The single FCM dispatch entry point for the OTPSender SMS gateway. Unlike
++ * NotificationService (which fans a USER-FACING notification out to many app
++ * device tokens via the PRIMARY Firebase project), this dispatcher sends a
++ * SILENT, DATA-ONLY message to ONE OTPSender gateway token via the SEPARATE
++ * OTPSender Firebase project ([FirebaseAdminInitializer.otpSenderApp]).
++ *
++ * WHY DATA-ONLY (no `notification` block)
++ *   The OTPSender app must wake up and act on the payload (send an SMS) even in
++ *   the background — it must NOT render a tray notification. A notification
++ *   block would (a) show a useless tray entry and (b) on Android, background
++ *   messages with a notification block are NOT delivered to the app's
++ *   onMessageReceived handler. So we send data-only and set high priority.
++ *
++ * GRACEFUL DEGRADATION
++ *   When the OTPSender Firebase app is not initialised (credentials absent),
++ *   [dispatch] returns false WITHOUT throwing. The caller (OtpService) then
++ *   leaves the SMS request pending — OTP generation never fails on push being
++ *   unavailable. The OTPSender recovery flow (GET /pending) will pick the
++ *   request up later.
++ */
++package com.littlebridge.enrollplus.feature.gateway.service
++
++import com.google.firebase.messaging.AndroidConfig
++import com.google.firebase.messaging.FirebaseMessaging
++import com.google.firebase.messaging.Message
++import com.littlebridge.enrollplus.feature.notification.firebase.FirebaseAdminInitializer
++import org.slf4j.LoggerFactory
++
++class GatewayFcmDispatcher {
++
++    private val log = LoggerFactory.getLogger("GatewayFcmDispatcher")
++
++    /**
++     * Push a data-only "send this SMS" command to the OTPSender gateway
++     * identified by [fcmToken].
++     *
++     * @return true when FCM accepted the message; false when the OTPSender
++     *   Firebase app is unavailable or the send failed. NEVER throws.
++     */
++    suspend fun dispatch(
++        fcmToken: String,
++        requestId: String,
++        phoneNumber: String,
++        otp: String?,
++        message: String,
++    ): Boolean {
++        val app = FirebaseAdminInitializer.otpSenderApp()
++            ?: run {
++                log.warn(
++                    "[GatewayFcm] OTPSender Firebase app unavailable — leaving request {} pending",
++                    requestId,
++                )
++                return false
++            }
++
++        val data = buildMap {
++            put("type", "SEND_SMS")
++            put("requestId", requestId)
++            put("phoneNumber", phoneNumber)
++            put("message", message)
++            if (!otp.isNullOrBlank()) put("otp", otp)
++        }
++
++        val fcmMessage = Message.builder()
++            .setToken(fcmToken)
++            .putAllData(data)
++            // High priority so the gateway phone wakes promptly even when dozing.
++            .setAndroidConfig(
++                AndroidConfig.builder()
++                    .setPriority(AndroidConfig.Priority.HIGH)
++                    .build()
++            )
++            .build()
++
++        return runCatching {
++            FirebaseMessaging.getInstance(app).send(fcmMessage)
++        }.map {
++            log.info("[GatewayFcm] dispatched SMS request {} to gateway", requestId)
++            true
++        }.getOrElse {
++            log.warn(
++                "[GatewayFcm] dispatch failed for request {}: {}",
++                requestId, it.message?.take(160),
++            )
++            false
++        }
++    }
++}
+diff --git a/server/src/main/kotlin/com/littlebridge/enrollplus/feature/gateway/service/GatewaySmsService.kt b/server/src/main/kotlin/com/littlebridge/enrollplus/feature/gateway/service/GatewaySmsService.kt
+new file mode 100644
+index 0000000..0d8810c
+--- /dev/null
++++ b/server/src/main/kotlin/com/littlebridge/enrollplus/feature/gateway/service/GatewaySmsService.kt
+@@ -0,0 +1,131 @@
++/*
++ * File: GatewaySmsService.kt
++ * Module: feature.gateway.service
++ *
++ * The reusable "send this OTP SMS via the OTPSender gateway" entry point used
++ * by OtpService. It encapsulates the target OTP flow:
++ *
++ *   Store OTP (already done by OtpService)
++ *        ↓
++ *   Create SMS request  (status = pending)
++ *        ↓
++ *   Locate active OTPSender device (is_active + last_seen_at within window)
++ *        ↓
++ *   Send FCM data-message to that device  → mark request dispatched
++ *        ↓
++ *   Return the requestId
++ *
++ * NO SMS PROVIDER CALL happens here — the OTPSender phone sends the SMS from
++ * its own SIM. The backend never touches Fast2SMS / MSG91 / Twilio on this path.
++ *
++ * DEGRADATION (never fails OTP generation)
++ *   - No active gateway device → request stays `pending`; the OTPSender recovery
++ *     flow (GET /pending) picks it up later. Result: ok=true, dispatched=false.
++ *   - FCM unavailable / send fails → request stays `pending` likewise.
++ *   The caller treats a created requestId as success regardless of dispatch.
++ *
++ * ENABLEMENT
++ *   [isEnabled] is true only when OTP_GATEWAY_ENABLED=true. When false, OtpService
++ *   uses its existing multi-provider direct-SMS chain unchanged.
++ */
++package com.littlebridge.enrollplus.feature.gateway.service
++
++import com.littlebridge.enrollplus.feature.gateway.repository.OtpGatewayDeviceRepository
++import com.littlebridge.enrollplus.feature.gateway.repository.SmsRequestRepository
++import org.slf4j.LoggerFactory
++
++/** Outcome of a gateway dispatch attempt. */
++data class GatewayDispatchResult(
++    /** The created SMS request's public id (always present when ok=true). */
++    val requestId: String?,
++    /** True when the SMS request row was created (regardless of FCM delivery). */
++    val ok: Boolean,
++    /** True when an FCM data-message was actually pushed to a live gateway. */
++    val dispatched: Boolean,
++    /** Human-readable note for logs / telemetry. */
++    val note: String? = null,
++)
++
++class GatewaySmsService(
++    private val deviceRepository: OtpGatewayDeviceRepository = OtpGatewayDeviceRepository(),
++    private val smsRequestRepository: SmsRequestRepository = SmsRequestRepository(),
++    private val fcmDispatcher: GatewayFcmDispatcher = GatewayFcmDispatcher(),
++) {
++
++    private val log = LoggerFactory.getLogger("GatewaySmsService")
++
++    /**
++     * Send an OTP SMS through the OTPSender gateway.
++     *
++     * @param phoneNumber destination in E.164.
++     * @param otp the plaintext code (the gateway phone types it into the SMS).
++     * @param message the full SMS body.
++     * @param purpose login | signup | …
++     */
++    suspend fun sendOtpSms(
++        phoneNumber: String,
++        otp: String,
++        message: String,
++        purpose: String,
++    ): GatewayDispatchResult {
++        // 1) Create the SMS request (pending).
++        val requestId = smsRequestRepository.create(
++            phoneNumber = phoneNumber,
++            otp = otp,
++            message = message,
++            purpose = purpose,
++        )
++
++        // 2) Locate the freshest active gateway device.
++        val device = deviceRepository.activeGatewayForDispatch(windowMinutes = livenessWindowMinutes())
++        if (device == null) {
++            log.warn(
++                "[GatewaySms] no active OTPSender device — request {} left pending",
++                requestId,
++            )
++            return GatewayDispatchResult(
++                requestId = requestId,
++                ok = true,
++                dispatched = false,
++                note = "no active gateway device; left pending",
++            )
++        }
++
++        // 3) Push the FCM data-message to that device.
++        val pushed = fcmDispatcher.dispatch(
++            fcmToken = device.fcmToken,
++            requestId = requestId,
++            phoneNumber = phoneNumber,
++            otp = otp,
++            message = message,
++        )
++
++        // 4) Mark dispatched on success; otherwise leave pending for recovery.
++        if (pushed) {
++            smsRequestRepository.markDispatched(requestId, device.deviceId)
++            return GatewayDispatchResult(
++                requestId = requestId,
++                ok = true,
++                dispatched = true,
++                note = "dispatched to ${device.deviceId}",
++            )
++        }
++
++        return GatewayDispatchResult(
++            requestId = requestId,
++            ok = true,
++            dispatched = false,
++            note = "FCM dispatch failed; left pending",
++        )
++    }
++
++    companion object {
++        /** Gateway path is active only when OTP_GATEWAY_ENABLED=true. */
++        fun isEnabled(): Boolean =
++            System.getenv("OTP_GATEWAY_ENABLED")?.equals("true", ignoreCase = true) == true
++
++        /** Device-liveness window in minutes (default 5, per spec). */
++        fun livenessWindowMinutes(): Long =
++            System.getenv("OTP_GATEWAY_LIVENESS_MINUTES")?.toLongOrNull()?.coerceIn(1, 60) ?: 5L
++    }
++}
+diff --git a/server/src/main/kotlin/com/littlebridge/enrollplus/feature/notification/firebase/FirebaseAdminInitializer.kt b/server/src/main/kotlin/com/littlebridge/enrollplus/feature/notification/firebase/FirebaseAdminInitializer.kt
+index 1b76c75..34618bf 100644
+--- a/server/src/main/kotlin/com/littlebridge/enrollplus/feature/notification/firebase/FirebaseAdminInitializer.kt
++++ b/server/src/main/kotlin/com/littlebridge/enrollplus/feature/notification/firebase/FirebaseAdminInitializer.kt
+@@ -30,6 +30,20 @@
+  *   (SQLite, no Firebase project) run the rest of the API surface unchanged
+  *   and lets the migration ship without forcing every operator to wire
+  *   Firebase before the next deploy.
++ *
++ * MULTI-PROJECT SUPPORT (feature/setup_notification — OTPSender integration)
++ *   The backend now pushes to TWO independent Firebase projects:
++ *     • The Enroll / VidyaPrayag app  → [app] (the original FCM project).
++ *     • The OTPSender gateway app     → [otpSenderApp] (a SEPARATE Firebase
++ *                                       project that owns the OTPSender
++ *                                       Android install's FCM tokens).
++ *   Each project needs its OWN service-account credential. Rather than
++ *   replacing the existing single-app mechanism, we EXTEND it: a second
++ *   resolver chain reads OTP_SENDER_*-prefixed env vars (mirroring the
++ *   FIREBASE_* family) and initialises a distinct, named FirebaseApp. When
++ *   the OTPSender credentials are absent, [otpSenderApp] returns null and the
++ *   gateway dispatch degrades to "leave the SMS request pending" — exactly the
++ *   same no-throw degradation the primary app already uses.
+  */
+ package com.littlebridge.enrollplus.feature.notification.firebase
+ 
+@@ -44,6 +58,7 @@ import java.util.Properties
+ object FirebaseAdminInitializer {
+ 
+     private const val APP_NAME = "vidyaprayag-server"
++    private const val OTP_SENDER_APP_NAME = "vidyaprayag-otpsender"
+ 
+     @Volatile
+     private var cachedApp: FirebaseApp? = null
+@@ -54,6 +69,16 @@ object FirebaseAdminInitializer {
+     @Volatile
+     private var credentialSource: String? = null
+ 
++    // -- OTPSender (separate Firebase project) ----------------------------
++    @Volatile
++    private var cachedOtpSenderApp: FirebaseApp? = null
++
++    @Volatile
++    private var otpSenderAttempted: Boolean = false
++
++    @Volatile
++    private var otpSenderCredentialSource: String? = null
++
+     /**
+      * Returns the initialized FirebaseApp or null when credentials
+      * cannot be resolved.
+@@ -64,7 +89,12 @@ object FirebaseAdminInitializer {
+         synchronized(this) {
+             if (attempted) return cachedApp
+ 
+-            cachedApp = initialise()
++            cachedApp = initialise(
++                appName = APP_NAME,
++                envKeys = PRIMARY_ENV_KEYS,
++                localPropertyKey = "firebase.credentials.file",
++                onResolved = { credentialSource = it },
++            )
+             attempted = true
+ 
+             if (cachedApp == null) {
+@@ -83,20 +113,66 @@ object FirebaseAdminInitializer {
+ 
+     fun isAvailable(): Boolean = app() != null
+ 
++    /**
++     * Returns the initialized OTPSender FirebaseApp or null when its
++     * credentials cannot be resolved. This is a DISTINCT Firebase project
++     * from [app] — it owns the OTPSender Android install's FCM tokens. When
++     * null, the gateway dispatch leaves the SMS request pending (no throw).
++     */
++    fun otpSenderApp(): FirebaseApp? {
++        if (otpSenderAttempted) return cachedOtpSenderApp
++
++        synchronized(this) {
++            if (otpSenderAttempted) return cachedOtpSenderApp
++
++            cachedOtpSenderApp = initialise(
++                appName = OTP_SENDER_APP_NAME,
++                envKeys = OTP_SENDER_ENV_KEYS,
++                localPropertyKey = "otp.sender.firebase.credentials.file",
++                onResolved = { otpSenderCredentialSource = it },
++            )
++            otpSenderAttempted = true
++
++            if (cachedOtpSenderApp == null) {
++                println(
++                    "FIREBASE_INIT: No OTPSender credentials resolved — SMS-gateway push DISABLED."
++                )
++            } else {
++                println(
++                    "FIREBASE_INIT: OTPSender FirebaseApp '${cachedOtpSenderApp!!.name}' initialized using '$otpSenderCredentialSource'."
++                )
++            }
++
++            return cachedOtpSenderApp
++        }
++    }
++
++    fun isOtpSenderAvailable(): Boolean = otpSenderApp() != null
++
+     // ------------------------------------------------------------------
+     // Initialization
+     // ------------------------------------------------------------------
+ 
+-    private fun initialise(): FirebaseApp? {
++    /**
++     * Initialise a named FirebaseApp from the supplied env-key family +
++     * local.properties key. Shared by both the primary app and the OTPSender
++     * app so the credential-resolution policy stays in ONE place.
++     */
++    private fun initialise(
++        appName: String,
++        envKeys: FirebaseEnvKeys,
++        localPropertyKey: String,
++        onResolved: (String) -> Unit,
++    ): FirebaseApp? {
+ 
+         FirebaseApp.getApps()
+-            .firstOrNull { it.name == APP_NAME }
++            .firstOrNull { it.name == appName }
+             ?.let {
+-                println("FIREBASE_INIT: Existing FirebaseApp '$APP_NAME' found.")
++                println("FIREBASE_INIT: Existing FirebaseApp '$appName' found.")
+                 return it
+             }
+ 
+-        val credentials = resolveCredentials()
++        val credentials = resolveCredentials(envKeys, localPropertyKey, onResolved)
+             ?: return null
+ 
+         val options = FirebaseOptions.builder()
+@@ -104,31 +180,61 @@ object FirebaseAdminInitializer {
+             .build()
+ 
+         return runCatching {
+-            FirebaseApp.initializeApp(options, APP_NAME)
++            FirebaseApp.initializeApp(options, appName)
+         }.onSuccess {
+-            println("FIREBASE_INIT: Firebase Admin SDK initialized.")
++            println("FIREBASE_INIT: Firebase Admin SDK initialized for '$appName'.")
+         }.onFailure {
+             println(
+-                "FIREBASE_INIT: FirebaseApp.initializeApp failed: ${it.message}"
++                "FIREBASE_INIT: FirebaseApp.initializeApp failed for '$appName': ${it.message}"
+             )
+         }.getOrNull()
+     }
+ 
++    /**
++     * The env-var family for one Firebase project. The primary app reads the
++     * historical FIREBASE_* names; the OTPSender app reads OTP_SENDER_*-
++     * prefixed equivalents so the two projects never share a credential.
++     */
++    private data class FirebaseEnvKeys(
++        val json: String,
++        val file: String,
++        val googleAppCreds: String?,
++    )
++
++    private val PRIMARY_ENV_KEYS = FirebaseEnvKeys(
++        json = "FIREBASE_CREDENTIALS_JSON",
++        file = "FIREBASE_CREDENTIALS_FILE",
++        googleAppCreds = "GOOGLE_APPLICATION_CREDENTIALS",
++    )
++
++    private val OTP_SENDER_ENV_KEYS = FirebaseEnvKeys(
++        json = "OTP_SENDER_FIREBASE_CREDENTIALS_JSON",
++        file = "OTP_SENDER_FIREBASE_CREDENTIALS_FILE",
++        // No ADC fallback for the OTPSender project: ADC is process-global and
++        // would otherwise resolve to the PRIMARY project's credentials, silently
++        // pushing OTPSender messages to the wrong Firebase app.
++        googleAppCreds = null,
++    )
++
+     // ------------------------------------------------------------------
+     // Credential Resolution
+     // ------------------------------------------------------------------
+ 
+-    private fun resolveCredentials(): GoogleCredentials? {
++    private fun resolveCredentials(
++        envKeys: FirebaseEnvKeys,
++        localPropertyKey: String,
++        onResolved: (String) -> Unit,
++    ): GoogleCredentials? {
+ 
+         // --------------------------------------------------------------
+-        // 1. Render / Railway / Fly.io
++        // 1. Render / Railway / Fly.io  (inline JSON env var)
+         // --------------------------------------------------------------
+-        System.getenv("FIREBASE_CREDENTIALS_JSON")
++        System.getenv(envKeys.json)
+             ?.takeIf { it.isNotBlank() }
+             ?.let { json ->
+ 
+                 println(
+-                    "FIREBASE_INIT: Attempting FIREBASE_CREDENTIALS_JSON"
++                    "FIREBASE_INIT: Attempting ${envKeys.json}"
+                 )
+ 
+                 return runCatching {
+@@ -136,14 +242,14 @@ object FirebaseAdminInitializer {
+                         json.byteInputStream(Charsets.UTF_8)
+                     )
+                 }.onSuccess {
+-                    credentialSource = "FIREBASE_CREDENTIALS_JSON"
++                    onResolved(envKeys.json)
+ 
+                     println(
+-                        "FIREBASE_INIT: Loaded credentials from FIREBASE_CREDENTIALS_JSON"
++                        "FIREBASE_INIT: Loaded credentials from ${envKeys.json}"
+                     )
+                 }.onFailure {
+                     println(
+-                        "FIREBASE_INIT: Invalid FIREBASE_CREDENTIALS_JSON: ${it.message}"
++                        "FIREBASE_INIT: Invalid ${envKeys.json}: ${it.message}"
+                     )
+                 }.getOrNull()
+             }
+@@ -151,12 +257,12 @@ object FirebaseAdminInitializer {
+         // --------------------------------------------------------------
+         // 2. Explicit credentials file
+         // --------------------------------------------------------------
+-        System.getenv("FIREBASE_CREDENTIALS_FILE")
++        System.getenv(envKeys.file)
+             ?.takeIf { it.isNotBlank() }
+             ?.let { path ->
+ 
+                 println(
+-                    "FIREBASE_INIT: Attempting FIREBASE_CREDENTIALS_FILE"
++                    "FIREBASE_INIT: Attempting ${envKeys.file}"
+                 )
+ 
+                 return runCatching {
+@@ -164,27 +270,28 @@ object FirebaseAdminInitializer {
+                         GoogleCredentials.fromStream(it)
+                     }
+                 }.onSuccess {
+-                    credentialSource = "FIREBASE_CREDENTIALS_FILE"
++                    onResolved(envKeys.file)
+ 
+                     println(
+-                        "FIREBASE_INIT: Loaded credentials from FIREBASE_CREDENTIALS_FILE ($path)"
++                        "FIREBASE_INIT: Loaded credentials from ${envKeys.file} ($path)"
+                     )
+                 }.onFailure {
+                     println(
+-                        "FIREBASE_INIT: Cannot read FIREBASE_CREDENTIALS_FILE ($path): ${it.message}"
++                        "FIREBASE_INIT: Cannot read ${envKeys.file} ($path): ${it.message}"
+                     )
+                 }.getOrNull()
+             }
+ 
+         // --------------------------------------------------------------
+-        // 3. Standard Google env var
++        // 3. Standard Google env var (primary app only; null for OTPSender)
+         // --------------------------------------------------------------
+-        System.getenv("GOOGLE_APPLICATION_CREDENTIALS")
++        envKeys.googleAppCreds
++            ?.let { System.getenv(it) }
+             ?.takeIf { it.isNotBlank() }
+             ?.let { path ->
+ 
+                 println(
+-                    "FIREBASE_INIT: Attempting GOOGLE_APPLICATION_CREDENTIALS"
++                    "FIREBASE_INIT: Attempting ${envKeys.googleAppCreds}"
+                 )
+ 
+                 return runCatching {
+@@ -192,14 +299,14 @@ object FirebaseAdminInitializer {
+                         GoogleCredentials.fromStream(it)
+                     }
+                 }.onSuccess {
+-                    credentialSource = "GOOGLE_APPLICATION_CREDENTIALS"
++                    onResolved(envKeys.googleAppCreds!!)
+ 
+                     println(
+-                        "FIREBASE_INIT: Loaded credentials from GOOGLE_APPLICATION_CREDENTIALS ($path)"
++                        "FIREBASE_INIT: Loaded credentials from ${envKeys.googleAppCreds} ($path)"
+                     )
+                 }.onFailure {
+                     println(
+-                        "FIREBASE_INIT: Cannot read GOOGLE_APPLICATION_CREDENTIALS ($path): ${it.message}"
++                        "FIREBASE_INIT: Cannot read ${envKeys.googleAppCreds} ($path): ${it.message}"
+                     )
+                 }.getOrNull()
+             }
+@@ -207,12 +314,12 @@ object FirebaseAdminInitializer {
+         // --------------------------------------------------------------
+         // 4. local.properties
+         // --------------------------------------------------------------
+-        localProperty("firebase.credentials.file")
++        localProperty(localPropertyKey)
+             ?.takeIf { it.isNotBlank() }
+             ?.let { path ->
+ 
+                 println(
+-                    "FIREBASE_INIT: Attempting local.properties credential"
++                    "FIREBASE_INIT: Attempting local.properties credential ($localPropertyKey)"
+                 )
+ 
+                 return runCatching {
+@@ -220,7 +327,7 @@ object FirebaseAdminInitializer {
+                         GoogleCredentials.fromStream(it)
+                     }
+                 }.onSuccess {
+-                    credentialSource = "local.properties"
++                    onResolved("local.properties:$localPropertyKey")
+ 
+                     println(
+                         "FIREBASE_INIT: Loaded credentials from local.properties ($path)"
+@@ -233,8 +340,17 @@ object FirebaseAdminInitializer {
+             }
+ 
+         // --------------------------------------------------------------
+-        // 5. Application Default Credentials
++        // 5. Application Default Credentials (primary app only)
++        //    Skipped for the OTPSender project — see OTP_SENDER_ENV_KEYS note.
+         // --------------------------------------------------------------
++        if (envKeys.googleAppCreds == null) {
++            println(
++                "FIREBASE_INIT: No '$localPropertyKey'/${envKeys.json}/${envKeys.file} resolved; " +
++                    "skipping ADC fallback (project-scoped credential required)."
++            )
++            return null
++        }
++
+         println(
+             "FIREBASE_INIT: Attempting Application Default Credentials"
+         )
+@@ -242,7 +358,7 @@ object FirebaseAdminInitializer {
+         return runCatching {
+             GoogleCredentials.getApplicationDefault()
+         }.onSuccess {
+-            credentialSource = "Application Default Credentials"
++            onResolved("Application Default Credentials")
+ 
+             println(
+                 "FIREBASE_INIT: Loaded Application Default Credentials"
+@@ -257,10 +373,10 @@ object FirebaseAdminInitializer {
+                 FIREBASE_INIT: No credentials resolved.
+ 
+                 Supported sources:
+-                - FIREBASE_CREDENTIALS_JSON
+-                - FIREBASE_CREDENTIALS_FILE
+-                - GOOGLE_APPLICATION_CREDENTIALS
+-                - local.properties (firebase.credentials.file)
++                - ${envKeys.json}
++                - ${envKeys.file}
++                - ${envKeys.googleAppCreds ?: "(ADC disabled for this project)"}
++                - local.properties ($localPropertyKey)
+                 - Application Default Credentials
+                 """.trimIndent()
+             )

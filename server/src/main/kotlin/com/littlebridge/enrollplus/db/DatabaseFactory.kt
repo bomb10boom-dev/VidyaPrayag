@@ -152,6 +152,11 @@ object DatabaseFactory {
         // Notification spine + push registry + link approval (audit part-2 RA-41/42/46/48/50)
         NotificationsTable,
         DeviceTokensTable,
+        // OTPSender SMS-gateway integration (feature/setup_notification):
+        // device registry + SMS request queue. FK-free (device_id is a soft
+        // reference) so declaration order vs other tables does not matter.
+        OtpGatewayDevicesTable,
+        SmsRequestsTable,
         ParentChildLinksTable,
         // Non-teaching staff vertical (RA-S17 — Admin People sub-tabs)
         NonTeachingStaffTable,
