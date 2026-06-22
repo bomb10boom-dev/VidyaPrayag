@@ -411,7 +411,7 @@ The next `/school/dashboard` and `/school/results` calls return the new content 
 
 ## 10. What changed on this branch (for code reviewers)
 
-- **6 new Kotlin files** under `server/src/main/kotlin/com/littlebridge/vidyaprayag/feature/school/`:
+- **6 new Kotlin files** under `server/src/main/kotlin/com.littlebridge.enrollplus/feature/school/`:
   - `SchoolDashboardRouting.kt`
   - `SchoolAnalyticsRouting.kt`
   - `LeaveRequestsRouting.kt`

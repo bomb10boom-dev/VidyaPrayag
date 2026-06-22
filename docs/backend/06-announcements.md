@@ -1,6 +1,6 @@
 # 06 — School Announcements
 
-**File:** `server/src/main/kotlin/com/littlebridge/vidyaprayag/feature/announcements/AnnouncementRouting.kt`
+**File:** `server/src/main/kotlin/com.littlebridge.enrollplus/feature/announcements/AnnouncementRouting.kt`
 **Spec ref:** `vidya_prayag_api_spec2.artifact.md` §Screen: School Dashboard (Announcement Tab)
 **UI consumers:**
 - `composeApp/.../ui/screens/admin/SchoolAnnouncementsScreen.kt`

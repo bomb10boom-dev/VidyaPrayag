@@ -1,6 +1,6 @@
 # 04 — User Details & Onboarding State
 
-**File:** `server/src/main/kotlin/com/littlebridge/vidyaprayag/feature/user/UserDetailsRouting.kt`
+**File:** `server/src/main/kotlin/com.littlebridge.enrollplus/feature/user/UserDetailsRouting.kt`
 **Spec ref:** `vidya_prayag_api_spec.artifact.md` §Module: Role-Specific Experience
 **UI consumers:**
 - Post-login routing in `shared/.../presentation/MainViewModel.kt`

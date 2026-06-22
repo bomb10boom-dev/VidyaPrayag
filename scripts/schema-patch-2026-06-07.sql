@@ -33,7 +33,7 @@ BEGIN;
 -- -----------------------------------------------------------------------------
 -- PATCH-001 — scholarships table (re-audit RA-05)
 --
--- Source of truth: server/src/main/kotlin/com/littlebridge/vidyaprayag/db/Tables.kt
+-- Source of truth: server/src/main/kotlin/com.littlebridge.enrollplus/db/Tables.kt
 --                  object ScholarshipsTable : UUIDTable("scholarships", "id") { … }
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS scholarships (
@@ -60,7 +60,7 @@ CREATE INDEX IF NOT EXISTS ix_scholarships_active_position
 -- -----------------------------------------------------------------------------
 -- PATCH-002 — scholarship_applications table (re-audit RA-05)
 --
--- Source of truth: server/src/main/kotlin/com/littlebridge/vidyaprayag/db/Tables.kt
+-- Source of truth: server/src/main/kotlin/com.littlebridge.enrollplus/db/Tables.kt
 --                  object ScholarshipApplicationsTable : UUIDTable(...) { … }
 --
 -- parent_id references app_users(id). The Exposed model does NOT declare an

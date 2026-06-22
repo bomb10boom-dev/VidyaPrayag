@@ -71,8 +71,8 @@ refresh the launcher/wordmark in a later pass:
 
 | # | Path | What to change |
 |---|---|---|
-| 1 | `composeApp/src/commonMain/kotlin/com/littlebridge/vidyaprayag/ui/v2/components/VLogo.kt` | Keep the geometry. **Recolour only:** swap the teal arc accent for the lavender-violet gradient (`#544AB8`→`#6C5CE0`→`#544AB8`); keep deck + cables navy; make the centre node accent violet. Plate → lavender `#E6E6FA`. |
-| 2 | `composeApp/src/commonMain/kotlin/com/littlebridge/vidyaprayag/ui/v2/components/VBrandLogo.kt` | Keep `drawBridge` geometry. For the dark/hero plate: white deck/cables + lavender apex node (mirror `enrollplus-mark-dark.svg`). |
+| 1 | `composeApp/src/commonMain/kotlin/com.littlebridge.enrollplus/ui/v2/components/VLogo.kt` | Keep the geometry. **Recolour only:** swap the teal arc accent for the lavender-violet gradient (`#544AB8`→`#6C5CE0`→`#544AB8`); keep deck + cables navy; make the centre node accent violet. Plate → lavender `#E6E6FA`. |
+| 2 | `composeApp/src/commonMain/kotlin/com.littlebridge.enrollplus/ui/v2/components/VBrandLogo.kt` | Keep `drawBridge` geometry. For the dark/hero plate: white deck/cables + lavender apex node (mirror `enrollplus-mark-dark.svg`). |
 | 3 | `composeApp/src/androidMain/res/drawable-v24/ic_launcher_foreground.xml` | Regenerate from `enrollplus-mark.svg` (vector drawable). The launcher icon should be the **mark only** (no "+"). |
 | 4 | `composeApp/src/androidMain/res/drawable-v24/ic_launcher_monochrome.xml` | Regenerate single-colour silhouette of the new mark (deck + arc + apex node). |
 | 5 | `composeApp/src/androidMain/res/drawable/ic_launcher_background.xml` | Set background to lavender `#E6E6FA` (light) to match the new plate. |

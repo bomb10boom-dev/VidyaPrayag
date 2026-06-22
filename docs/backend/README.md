@@ -2,7 +2,7 @@
 
 This folder documents every backend file added in the `backend-by-abuzar`
 branch. Each markdown file maps 1-to-1 to a Kotlin source file under
-`server/src/main/kotlin/com/littlebridge/vidyaprayag/`.
+`server/src/main/kotlin/com.littlebridge.enrollplus/`.
 
 > Scope: only the endpoints listed in the two API spec artifacts
 > (`vidya_prayag_api_spec.artifact.md` and `vidya_prayag_api_spec2.artifact.md`)
@@ -15,7 +15,7 @@ branch. Each markdown file maps 1-to-1 to a Kotlin source file under
 ## 1. High-level Architecture
 
 ```
-server/src/main/kotlin/com/littlebridge/vidyaprayag/
+server/src/main/kotlin/com.littlebridge.enrollplus/
 ├── Application.kt                       ← Ktor bootstrap, plugin install, route mount
 ├── core/
 │   ├── ApiResponse.kt                   ← {success,message,data} envelope DTO

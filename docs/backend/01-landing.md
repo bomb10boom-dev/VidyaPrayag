@@ -1,8 +1,8 @@
 # 01 — Landing Page Content
 
-**File:** `server/src/main/kotlin/com/littlebridge/vidyaprayag/feature/content/LandingRouting.kt`
+**File:** `server/src/main/kotlin/com.littlebridge.enrollplus/feature/content/LandingRouting.kt`
 **Spec ref:** `vidya_prayag_api_spec.artifact.md` §Screen: Common Landing Page
-**UI screen consumer:** `composeApp/src/commonMain/kotlin/com/littlebridge/vidyaprayag/presentation/landing/CommonLandingScreen.kt`
+**UI screen consumer:** `composeApp/src/commonMain/kotlin/com.littlebridge.enrollplus/presentation/landing/CommonLandingScreen.kt`
 
 ---
 

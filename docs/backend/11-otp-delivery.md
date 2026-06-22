@@ -1,10 +1,10 @@
 # 11 — OTP Delivery (multi-provider, free-tier friendly)
 
 **Files:**
-- `server/src/main/kotlin/com/littlebridge/vidyaprayag/feature/auth/OtpService.kt`
-- `server/src/main/kotlin/com/littlebridge/vidyaprayag/feature/auth/OtpDeliveryProvider.kt` (thin facade)
-- `server/src/main/kotlin/com/littlebridge/vidyaprayag/feature/auth/delivery/**`
-- `server/src/main/kotlin/com/littlebridge/vidyaprayag/feature/auth/OtpAdminRouting.kt`
+- `server/src/main/kotlin/com.littlebridge.enrollplus/feature/auth/OtpService.kt`
+- `server/src/main/kotlin/com.littlebridge.enrollplus/feature/auth/OtpDeliveryProvider.kt` (thin facade)
+- `server/src/main/kotlin/com.littlebridge.enrollplus/feature/auth/delivery/**`
+- `server/src/main/kotlin/com.littlebridge.enrollplus/feature/auth/OtpAdminRouting.kt`
 - SQL patch: `docs/backend/sql/01_supplementary_schema.sql` § SECTION 2b
 
 ---

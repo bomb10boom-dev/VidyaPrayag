@@ -3,12 +3,12 @@
 **Source spec:** `school_api_spec.artifact.md`
 **Branch:** `backend-by-abuzar`
 **Implementation:**
-- `server/src/main/kotlin/com/littlebridge/vidyaprayag/feature/school/SchoolDashboardRouting.kt`
-- `server/src/main/kotlin/com/littlebridge/vidyaprayag/feature/school/SchoolAnalyticsRouting.kt`
-- `server/src/main/kotlin/com/littlebridge/vidyaprayag/feature/school/LeaveRequestsRouting.kt`
-- `server/src/main/kotlin/com/littlebridge/vidyaprayag/feature/school/PtmRouting.kt`
-- `server/src/main/kotlin/com/littlebridge/vidyaprayag/feature/school/MessagesRouting.kt`
-- `server/src/main/kotlin/com/littlebridge/vidyaprayag/feature/school/ResultsRouting.kt`
+- `server/src/main/kotlin/com.littlebridge.enrollplus/feature/school/SchoolDashboardRouting.kt`
+- `server/src/main/kotlin/com.littlebridge.enrollplus/feature/school/SchoolAnalyticsRouting.kt`
+- `server/src/main/kotlin/com.littlebridge.enrollplus/feature/school/LeaveRequestsRouting.kt`
+- `server/src/main/kotlin/com.littlebridge.enrollplus/feature/school/PtmRouting.kt`
+- `server/src/main/kotlin/com.littlebridge.enrollplus/feature/school/MessagesRouting.kt`
+- `server/src/main/kotlin/com.littlebridge.enrollplus/feature/school/ResultsRouting.kt`
 
 All UI strings, statistics, and reference lists are **backend-driven**. Defaults are seeded into `app_config` (KV) by `db/Seed.kt`; ops edit them directly in Supabase without redeploying. Live numbers are computed against real tables (`attendance_records`, `students`, `faculty`, `school_onboarding_drafts`, `exam_results`, `leave_requests`, `ptm_events`, `ptm_class_progress`, `message_threads`, `messages`) on every request.
 

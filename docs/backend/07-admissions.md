@@ -1,6 +1,6 @@
 # 07 — Admission Enquiries
 
-**File:** `server/src/main/kotlin/com/littlebridge/vidyaprayag/feature/admissions/AdmissionRouting.kt`
+**File:** `server/src/main/kotlin/com.littlebridge.enrollplus/feature/admissions/AdmissionRouting.kt`
 **Spec ref:** `vidya_prayag_api_spec2.artifact.md` §Screen: Admission Enquiries Dashboard
 **UI consumer:** `composeApp/.../ui/screens/admin/AdmissionCRMDashboard.kt`
 

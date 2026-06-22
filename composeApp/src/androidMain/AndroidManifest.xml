@@ -6,6 +6,10 @@
     <!-- Real "use current location" in school onboarding (report §11.2). -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!-- Required on API 33+ (Tiramisu) to post foreground/local notifications.
+         Requested at runtime; NotificationManagerHelper gates posting on
+         NotificationManagerCompat.areNotificationsEnabled() as well. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:name=".EnRollPlusApp"
@@ -26,6 +30,21 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+          Firebase Cloud Messaging receiver. The MESSAGING_EVENT intent-filter
+          is required for FCM to route incoming pushes + token-rotation
+          callbacks to VidyaPrayagFirebaseMessagingService. exported=false —
+          only the Firebase system components may bind/start it; it is never
+          exposed to other apps.
+        -->
+        <service
+            android:name=".notification.VidyaPrayagFirebaseMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
     </application>
 
 </manifest>

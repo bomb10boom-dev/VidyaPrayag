@@ -76,6 +76,7 @@ kotlin {
         androidMain.dependencies {
             implementation(libs.koin.android)
             implementation(libs.ktor.client.okhttp)
+            implementation(libs.firebase.messaging)
         }
         commonMain.dependencies {
             implementation(libs.koin.core)
@@ -88,6 +89,7 @@ kotlin {
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)
+            implementation(libs.kotlinxCoroutinesTest)
         }
         jvmMain.dependencies {
             implementation(libs.ktor.client.okhttp)
@@ -100,7 +102,7 @@ kotlin {
 }
 
 android {
-    namespace = "com.littlebridge.vidyaprayag.shared"
+    namespace = "com.littlebridge.enrollplus.shared"
     compileSdk = libs.versions.android.compileSdk.get().toInt()
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_21

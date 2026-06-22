@@ -1,6 +1,6 @@
 # 08 — User / School Profile (Philosophy, Tour Videos, Gallery)
 
-**File:** `server/src/main/kotlin/com/littlebridge/vidyaprayag/feature/user/UserProfileRouting.kt`
+**File:** `server/src/main/kotlin/com.littlebridge.enrollplus/feature/user/UserProfileRouting.kt`
 **Spec ref:** `vidya_prayag_api_spec2.artifact.md` §Screen: User Profile / School Profile
 **UI consumer:** `composeApp/.../ui/screens/admin/InstitutionalProfileScreen.kt`
 

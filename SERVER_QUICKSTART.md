@@ -22,7 +22,7 @@ So every time you ran `gradlew.bat :server:run`, Gradle had to configure all of 
 
 | Change | File |
 |---|---|
-| Inlined the 2 trivial symbols the server consumed from `:shared` (`SERVER_PORT`, `Greeting`) | `server/src/main/kotlin/com/littlebridge/vidyaprayag/ServerEntry.kt` (new) |
+| Inlined the 2 trivial symbols the server consumed from `:shared` (`SERVER_PORT`, `Greeting`) | `server/src/main/kotlin/com.littlebridge.enrollplus/ServerEntry.kt` (new) |
 | Removed `implementation(projects.shared)` from the server module | `server/build.gradle.kts` |
 | Added a `-Pserver-only=true` flag that makes Gradle **completely skip** including `:composeApp` and `:shared` in the build | `settings.gradle.kts` |
 
@@ -75,7 +75,7 @@ gradlew.bat :server:run -Pserver-only=true
 What this does:
 
 - `-Pserver-only=true` tells `settings.gradle.kts` to include **only** `:server` (skip `:composeApp` + `:shared`).
-- Gradle then configures one JVM module, downloads JVM-only artifacts, compiles ~20 Kotlin files, and runs `com.littlebridge.vidyaprayag.ApplicationKt`.
+- Gradle then configures one JVM module, downloads JVM-only artifacts, compiles ~20 Kotlin files, and runs `com.littlebridge.enrollplus.ApplicationKt`.
 
 **Expected timings on a typical laptop (8 GB RAM, average internet):**
 

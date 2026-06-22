@@ -221,7 +221,7 @@ Acts as the primary "Handshake" API. It validates the client version, checks for
       "current_version": "2.4.0",
       "minimum_required_version": "2.3.5",
       "force_update": false,
-      "update_url": "https://play.google.com/store/apps/details?id=com.littlebridge.vidyaprayag",
+      "update_url": "https://play.google.com/store/apps/details?id=com.littlebridge.enrollplus",
       "update_message": "A new version with performance improvements is available."
     },
     "maintenance": {

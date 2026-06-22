@@ -37,7 +37,7 @@ After this, the backend's boot-time schema validation reports "all 36 tables pre
 > on those two blocks in the base file.
 
 After this, every table referenced by
-`server/src/main/kotlin/com/littlebridge/vidyaprayag/db/Tables.kt` exists.
+`server/src/main/kotlin/com.littlebridge.enrollplus/db/Tables.kt` exists.
 
 ## Tables mapped by the backend (`Tables.kt`)
 

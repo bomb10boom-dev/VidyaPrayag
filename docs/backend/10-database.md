@@ -1,10 +1,10 @@
 # 10 — Database Schema Reference
 
 **Files:**
-- `server/src/main/kotlin/com/littlebridge/vidyaprayag/db/DatabaseFactory.kt`
-- `server/src/main/kotlin/com/littlebridge/vidyaprayag/db/UserTable.kt`
-- `server/src/main/kotlin/com/littlebridge/vidyaprayag/db/Tables.kt`
-- `server/src/main/kotlin/com/littlebridge/vidyaprayag/db/Seed.kt`
+- `server/src/main/kotlin/com.littlebridge.enrollplus/db/DatabaseFactory.kt`
+- `server/src/main/kotlin/com.littlebridge.enrollplus/db/UserTable.kt`
+- `server/src/main/kotlin/com.littlebridge.enrollplus/db/Tables.kt`
+- `server/src/main/kotlin/com.littlebridge.enrollplus/db/Seed.kt`
 
 Library: [JetBrains Exposed](https://github.com/JetBrains/Exposed) 0.50.0
 Pool:    HikariCP

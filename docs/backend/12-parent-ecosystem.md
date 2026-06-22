@@ -3,11 +3,11 @@
 **Source spec:** `parent_api_spec.artifact.md`
 **Branch:** `backend-by-abuzar`
 **Implementation:**
-- `server/src/main/kotlin/com/littlebridge/vidyaprayag/feature/parent/ParentOnboardingRouting.kt`
-- `server/src/main/kotlin/com/littlebridge/vidyaprayag/feature/parent/ParentDashboardRouting.kt`
-- `server/src/main/kotlin/com/littlebridge/vidyaprayag/feature/parent/TrackProgressRouting.kt`
-- `server/src/main/kotlin/com/littlebridge/vidyaprayag/feature/parent/ParentFeesRouting.kt`
-- `server/src/main/kotlin/com/littlebridge/vidyaprayag/feature/content/SupportRouting.kt`
+- `server/src/main/kotlin/com.littlebridge.enrollplus/feature/parent/ParentOnboardingRouting.kt`
+- `server/src/main/kotlin/com.littlebridge.enrollplus/feature/parent/ParentDashboardRouting.kt`
+- `server/src/main/kotlin/com.littlebridge.enrollplus/feature/parent/TrackProgressRouting.kt`
+- `server/src/main/kotlin/com.littlebridge.enrollplus/feature/parent/ParentFeesRouting.kt`
+- `server/src/main/kotlin/com.littlebridge.enrollplus/feature/content/SupportRouting.kt`
 
 All UI strings, statistics, and configurations are **backend-driven**. Defaults are seeded into `app_config` (KV) by `CmsSeed.ensureLandingAndConfig()`; ops can edit them directly in Supabase without redeploying.
 

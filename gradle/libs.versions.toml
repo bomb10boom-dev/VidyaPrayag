@@ -32,6 +32,13 @@ dotenv = "6.5.1"
 logback = "1.5.32"
 material3 = "1.10.0-alpha05"
 okio = "3.10.2"
+# Notification foundation (feature/setup_notification)
+# - firebase-admin: server-side FCM dispatch via the Admin SDK (NOT raw REST).
+# - firebase-bom + firebase-messaging: Android client for receiving pushes.
+firebase-admin = "9.4.3"
+firebase-bom = "33.7.0"
+firebase-messaging = "25.0.1"
+google-services = "4.4.3"
 
 [libraries]
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
@@ -59,7 +66,8 @@ koin-android = { module = "io.insert-koin:koin-android", version.ref = "koin" }
 koin-androidx-compose = { module = "io.insert-koin:koin-androidx-compose", version.ref = "koin" }
 coil-compose = { module = "io.coil-kt.coil3:coil-compose", version.ref = "coil" }
 coil-network-ktor = { module = "io.coil-kt.coil3:coil-network-ktor3", version.ref = "coil" }
-kotlinx-coroutinesSwing = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-swing", version.ref = "kotlinx-coroutines" }
+kotlinxCoroutinesSwing = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-swing", version.ref = "kotlinx-coroutines" }
+kotlinxCoroutinesTest = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinx-coroutines" }
 androidx-navigation-compose = { module = "org.jetbrains.androidx.navigation:navigation-compose", version.ref = "navigation" }
 androidx-room-runtime = { module = "androidx.room:room-runtime", version.ref = "room" }
 androidx-room-compiler = { module = "androidx.room:room-compiler", version.ref = "room" }
@@ -84,8 +92,13 @@ hikaricp = { module = "com.zaxxer:HikariCP", version.ref = "hikaricp" }
 sqlite = { module = "org.xerial:sqlite-jdbc", version.ref = "sqlite" }
 sqlite-bundled = { module = "androidx.sqlite:sqlite-bundled", version.ref = "sqlite-bundled" }
 dotenv = { module = "io.github.cdimascio:dotenv-kotlin", version.ref = "dotenv" }
+# Notification foundation (feature/setup_notification)
+firebase-admin = { module = "com.google.firebase:firebase-admin", version.ref = "firebase-admin" }
+firebase-bom = { module = "com.google.firebase:firebase-bom", version.ref = "firebase-bom" }
+firebase-messaging = { module = "com.google.firebase:firebase-messaging", version.ref = "firebase-messaging" }
 
 [plugins]
+google-services = { id = "com.google.gms.google-services", version.ref = "google-services" }
 androidApplication = { id = "com.android.application", version.ref = "agp" }
 androidLibrary = { id = "com.android.library", version.ref = "agp" }
 composeHotReload = { id = "org.jetbrains.compose.hot-reload", version.ref = "composeHotReload" }

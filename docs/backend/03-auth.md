@@ -1,6 +1,6 @@
 # 03 — Authentication (check / signup / login / send-otp)
 
-**File:** `server/src/main/kotlin/com/littlebridge/vidyaprayag/feature/auth/AuthRouting.kt`
+**File:** `server/src/main/kotlin/com.littlebridge.enrollplus/feature/auth/AuthRouting.kt`
 **Spec ref:** `vidya_prayag_api_spec.artifact.md` §Module: User Authentication
 **UI consumers:**
 - `composeApp/.../ui/auth/AuthBottomSheet.kt`

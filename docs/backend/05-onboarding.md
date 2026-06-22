@@ -1,6 +1,6 @@
 # 05 — School Onboarding Flow
 
-**File:** `server/src/main/kotlin/com/littlebridge/vidyaprayag/feature/onboarding/OnboardingRouting.kt`
+**File:** `server/src/main/kotlin/com.littlebridge.enrollplus/feature/onboarding/OnboardingRouting.kt`
 **Spec ref:** `vidya_prayag_api_spec.artifact.md` §Module: School Onboarding Flow (ADMIN)
 **UI consumers:**
 - `composeApp/.../ui/screens/admin/InstitutionalBasicOBScreen.kt`

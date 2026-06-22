@@ -292,7 +292,7 @@ The next `/parent/track-progress` call returns the new content immediately.
 
 ## 10. What changed on this branch (for code reviewers)
 
-- **5 new Kotlin files** under `server/src/main/kotlin/com/littlebridge/vidyaprayag/feature/`:
+- **5 new Kotlin files** under `server/src/main/kotlin/com.littlebridge.enrollplus/feature/`:
   - `parent/ParentOnboardingRouting.kt`
   - `parent/ParentDashboardRouting.kt`
   - `parent/TrackProgressRouting.kt`

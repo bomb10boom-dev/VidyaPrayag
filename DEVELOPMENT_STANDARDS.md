@@ -9,7 +9,7 @@ This guide outlines the standard architecture and implementation patterns to fol
 Always start with the **Domain Layer** in the `shared` module. This layer is platform-independent.
 
 ### 1.1 Data Models
-Define data models as `@Serializable` data classes in `shared/src/commonMain/kotlin/com/littlebridge/vidyaprayag/domain/model/`.
+Define data models as `@Serializable` data classes in `shared/src/commonMain/kotlin/com.littlebridge.enrollplus/domain/model/`.
 
 ```kotlin
 @Serializable
@@ -21,7 +21,7 @@ data class MyFeatureItem(
 ```
 
 ### 1.2 Repository Interface
-Define the repository interface in `shared/src/commonMain/kotlin/com/littlebridge/vidyaprayag/domain/repository/`.
+Define the repository interface in `shared/src/commonMain/kotlin/com.littlebridge.enrollplus/domain/repository/`.
 
 ```kotlin
 interface MyFeatureRepository {
@@ -31,7 +31,7 @@ interface MyFeatureRepository {
 ```
 
 ### 1.3 Use Cases
-Create focused Use Case classes in `shared/src/commonMain/kotlin/com/littlebridge/vidyaprayag/domain/usecase/`. Use cases should represent a single business operation.
+Create focused Use Case classes in `shared/src/commonMain/kotlin/com.littlebridge.enrollplus/domain/usecase/`. Use cases should represent a single business operation.
 
 ```kotlin
 class GetMyFeatureItemsUseCase(private val repository: MyFeatureRepository) {
@@ -47,16 +47,16 @@ class GetMyFeatureItemsUseCase(private val repository: MyFeatureRepository) {
 Implement the repository and data sources in the `shared` module.
 
 ### 2.1 Remote Data Source (Ktor)
-Add API calls to a dedicated class in `shared/src/commonMain/kotlin/com/littlebridge/vidyaprayag/data/remote/`. Use the injected `HttpClient`.
+Add API calls to a dedicated class in `shared/src/commonMain/kotlin/com.littlebridge.enrollplus/data/remote/`. Use the injected `HttpClient`.
 
 ### 2.2 Repository Implementation
-Implement the repository in `shared/src/commonMain/kotlin/com/littlebridge/vidyaprayag/data/repository/`. Coordinate between local (Room) and remote (Ktor) data sources.
+Implement the repository in `shared/src/commonMain/kotlin/com.littlebridge.enrollplus/data/repository/`. Coordinate between local (Room) and remote (Ktor) data sources.
 
 ---
 
 ## 3. Presentation Layer (ViewModel)
 
-Create the ViewModel in `shared/src/commonMain/kotlin/com/littlebridge/vidyaprayag/presentation/`.
+Create the ViewModel in `shared/src/commonMain/kotlin/com.littlebridge.enrollplus/presentation/`.
 
 - Extend `androidx.lifecycle.ViewModel`.
 - Use `StateFlow` for UI state.
@@ -79,7 +79,7 @@ class MyFeatureViewModel(
 Implement the UI in the `composeApp` module.
 
 ### 4.1 Composable Screens
-Place screen-level composables in `composeApp/src/commonMain/kotlin/com/littlebridge/vidyaprayag/ui/screens/`.
+Place screen-level composables in `composeApp/src/commonMain/kotlin/com.littlebridge.enrollplus/ui/screens/`.
 
 - Use **Stateless Composables**: Pass the state and callbacks into the composable.
 - Use **ViewModel Injection**: Use Koin's `koinViewModel()` or `getViewModel()` to get the ViewModel.
@@ -102,7 +102,7 @@ Wrap your screen with `VidyaPrayagTheme` to ensure proper support for Light, Dar
 
 ## 5. Dependency Injection (Koin)
 
-Register all new classes in `shared/src/commonMain/kotlin/com/littlebridge/vidyaprayag/di/Koin.kt`.
+Register all new classes in `shared/src/commonMain/kotlin/com.littlebridge.enrollplus/di/Koin.kt`.
 
 - **Repositories**: `single<MyFeatureRepository> { MyFeatureRepositoryImpl(get(), get()) }`
 - **Use Cases**: `factory { GetMyFeatureItemsUseCase(get()) }`

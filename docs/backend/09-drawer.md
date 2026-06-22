@@ -1,6 +1,6 @@
 # 09 — Drawer Options (Analytics / Calendar / Holidays / Attendance)
 
-**File:** `server/src/main/kotlin/com/littlebridge/vidyaprayag/feature/school/SchoolRouting.kt`
+**File:** `server/src/main/kotlin/com.littlebridge.enrollplus/feature/school/SchoolRouting.kt`
 **Spec ref:** `vidya_prayag_api_spec2.artifact.md` §Screen: Drawer Options
 **UI consumers:**
 - `composeApp/.../ui/screens/admin/AnalyticsDashboardScreen.kt`

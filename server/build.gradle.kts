@@ -51,10 +51,10 @@ kotlin {
     }
 }
 
-group = "com.littlebridge.vidyaprayag"
+group = "com.littlebridge.enrollplus"
 version = "1.0.0"
 application {
-    mainClass.set("com.littlebridge.vidyaprayag.ApplicationKt")
+    mainClass.set("com.littlebridge.enrollplus.ApplicationKt")
     
     val isDevelopment: Boolean = project.ext.has("development")
     applicationDefaultJvmArgs = listOf(
@@ -76,7 +76,7 @@ dependencies {
     // which on a cold clone downloads gigabytes of artifacts and can take 30+
     // minutes on average hardware/internet. `:server` only used two trivial
     // symbols from `:shared` (SERVER_PORT, Greeting), which are now inlined in
-    // `server/src/main/kotlin/com/littlebridge/vidyaprayag/ServerEntry.kt`.
+    // `server/src/main/kotlin/com.littlebridge.enrollplus/ServerEntry.kt`.
     //
     // If you ever need to share more code between server and the mobile/web
     // apps, prefer creating a JVM-only sub-module (e.g. `:shared-jvm`) instead
@@ -129,6 +129,23 @@ dependencies {
     implementation(libs.hikaricp)
     implementation(libs.sqlite)
     implementation(libs.dotenv)
+
+    // -----------------------------------------------------------------
+    // Notification foundation (feature/setup_notification).
+    //
+    // Firebase Admin SDK is the ONLY sanctioned path for server-side FCM
+    // dispatch in this codebase. We deliberately do NOT hand-roll POSTs to
+    // the FCM REST endpoint — the Admin SDK handles service-account auth,
+    // automatic token refresh, batched multicast, structured error responses
+    // (UNREGISTERED → mark inactive), and retry/backoff for us.
+    //
+    // Initialisation is lazy and guarded (see feature/notification/firebase/
+    // FirebaseAdminInitializer.kt): if FIREBASE_CREDENTIALS_* env vars are
+    // absent, the NotificationService degrades to a no-op that logs a
+    // warning instead of crashing the boot. This lets local dev (SQLite, no
+    // Firebase project) run the rest of the API surface unchanged.
+    // -----------------------------------------------------------------
+    implementation(libs.firebase.admin)
 
     testImplementation(libs.ktor.serverTestHost)
     testImplementation(libs.kotlin.testJunit)

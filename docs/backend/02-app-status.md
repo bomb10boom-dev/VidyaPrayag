@@ -1,6 +1,6 @@
 # 02 — App Status / Splash Handshake
 
-**File:** `server/src/main/kotlin/com/littlebridge/vidyaprayag/feature/config/AppStatusRouting.kt`
+**File:** `server/src/main/kotlin/com.littlebridge.enrollplus/feature/config/AppStatusRouting.kt`
 **Spec ref:** `vidya_prayag_api_spec.artifact.md` §Screen: Splash / Startup (Global)
 
 ---
@@ -26,7 +26,7 @@ GET /api/v1/config/app-status
       "current_version": "2.4.0",
       "minimum_required_version": "2.3.5",
       "force_update": false,
-      "update_url": "https://play.google.com/store/apps/details?id=com.littlebridge.vidyaprayag",
+      "update_url": "https://play.google.com/store/apps/details?id=com.littlebridge.enrollplus",
       "update_message": "A new version with performance improvements is available."
     },
     "maintenance": {
